@@ -428,7 +428,7 @@ in
         wpCli
         pkgs.coreutils
         pkgs.gnused
-        pkgs.mysql.client
+        (cfg.database.package.client or cfg.database.package)
       ];
       environment = serviceEnv;
       serviceConfig = {
@@ -459,7 +459,7 @@ in
       requires = [ "wordpress-init.service" ] ++ optional dbLocal "mysql.service";
       path = [
         wpCli
-        pkgs.mysql.client
+        (cfg.database.package.client or cfg.database.package)
       ];
       environment = serviceEnv // {
         XDG_DATA_HOME = "${cfg.stateDir}/caddy/data";
@@ -491,7 +491,7 @@ in
       requires = [ "wordpress.service" ];
       path = [
         wpCli
-        pkgs.mysql.client
+        (cfg.database.package.client or cfg.database.package)
       ];
       environment = serviceEnv;
       serviceConfig = {
