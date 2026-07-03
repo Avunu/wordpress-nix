@@ -34,10 +34,45 @@
         "type": "github"
       }
     },
+    "nixpkgs-rust": {
+      "locked": {
+        "lastModified": 1782723713,
+        "narHash": "sha256-oPXCU/SSUokcGaJREHibG1CBX3+s/W7orDWQOZDsEeQ=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b5aa0fbd538984f6e3d201be0005b4463d8b09f8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "nixpkgs-rust": "nixpkgs-rust",
+        "sqlite-database-integration": "sqlite-database-integration"
+      }
+    },
+    "sqlite-database-integration": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1783023221,
+        "narHash": "sha256-u2M91EbwxMb87mhnaNR3gVMngXieYby3JvaQ+TjNqck=",
+        "ref": "d1-support",
+        "rev": "cf541890783c7eb93162fa611d7a674435c7c794",
+        "revCount": 906,
+        "type": "git",
+        "url": "https://github.com/Avunu/sqlite-database-integration"
+      },
+      "original": {
+        "ref": "d1-support",
+        "type": "git",
+        "url": "https://github.com/Avunu/sqlite-database-integration"
       }
     },
     "systems": {

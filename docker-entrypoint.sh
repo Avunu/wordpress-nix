@@ -106,5 +106,21 @@ mkdir -p /var/www/html/wp-content/mu-plugins
 cp -a /mu-plugins/. /var/www/html/wp-content/mu-plugins/
 chmod 755 /var/www/html/wp-content/mu-plugins
 
+# Install the SQLite Database Integration plugin and the Cloudflare D1
+# database drop-in when the image bundles them and a proxy is configured.
+if [ -d /wordpress-plugins/sqlite-database-integration ]; then
+    echo "Installing the SQLite Database Integration plugin"
+    rm -rf /var/www/html/wp-content/plugins/sqlite-database-integration
+    mkdir -p /var/www/html/wp-content/plugins
+    cp -a /wordpress-plugins/sqlite-database-integration /var/www/html/wp-content/plugins/
+
+    if [ -n "${WP_D1_PROXY_URL:-}" ]; then
+        echo "Installing the Cloudflare D1 database drop-in (wp-content/db.php)"
+        cp /var/www/html/wp-content/plugins/sqlite-database-integration/wp-includes/database/d1/db.copy \
+            /var/www/html/wp-content/db.php
+        chmod 644 /var/www/html/wp-content/db.php
+    fi
+fi
+
 # Execute the main command
 exec "$@"

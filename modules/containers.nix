@@ -9,9 +9,32 @@
   pkgs,
   php,
   imageName,
+  # Source of the SQLite Database Integration project (with the D1 backend).
+  # When set, the image bundles the plugin, the D1 db.php drop-in, and the
+  # native wp_mysql_parser + wp_d1_client extensions.
+  d1DriverSrc ? null,
+  # Package set providing the Rust toolchain for the native extensions.
+  rustPkgs ? pkgs,
 }:
 let
   phpBuild = import ../lib/php.nix { inherit pkgs php; };
+
+  phpExtensions =
+    if d1DriverSrc == null then
+      null
+    else
+      import ../lib/php-extensions.nix {
+        inherit pkgs rustPkgs;
+        php = phpBuild;
+        src = d1DriverSrc;
+      };
+
+  # The PHP ini scan path: the buildEnv's own configuration, plus the native
+  # extensions when enabled. FrankenPHP's embedded PHP does not inherit the
+  # CLI wrapper's compiled-in scan directory, so it is set explicitly.
+  phpIniScanDir = pkgs.lib.concatStringsSep ":" (
+    [ "${phpBuild}/lib" ] ++ pkgs.lib.optional (phpExtensions != null) "${phpExtensions.iniDir}"
+  );
 
   wp-cli = pkgs.wp-cli.override {
     php = phpBuild;
@@ -42,6 +65,9 @@ pkgs.dockerTools.buildLayeredImage {
   ];
 
   config = {
+    Env = [
+      "PHP_INI_SCAN_DIR=${phpIniScanDir}"
+    ];
     Entrypoint = [
       "${pkgs.busybox}/bin/sh"
       "${pkgs.lib.getExe docker-entrypoint}"
@@ -71,6 +97,16 @@ pkgs.dockerTools.buildLayeredImage {
     # copy must-use plugins
     mkdir mu-plugins
     cp -r ${../mu-plugins}/. mu-plugins/
+${
+  pkgs.lib.optionalString (d1DriverSrc != null) ''
+    # Bundle the SQLite Database Integration plugin with the D1 backend.
+    # The entrypoint installs it into the docroot when WP_D1_PROXY_URL is set.
+    # -L dereferences the plugin's wp-includes/database symlink.
+    mkdir -p wordpress-plugins
+    cp -rL ${d1DriverSrc}/packages/plugin-sqlite-database-integration wordpress-plugins/sqlite-database-integration
+    chmod -R u+w wordpress-plugins
+''
+}
 
     # Symlink CA certificates
     ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt etc/ssl/certs/ca-certificates.crt
