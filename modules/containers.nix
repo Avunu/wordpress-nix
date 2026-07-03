@@ -58,7 +58,7 @@ pkgs.dockerTools.buildLayeredImage {
     pkgs.cacert
     # pkgs.ghostscript
     # pkgs.imagemagick
-    pkgs.mysql.client
+    pkgs.mariadb.client
     # pkgs.vips
     pkgs.zip
     wp-cli
