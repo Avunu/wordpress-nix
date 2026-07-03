@@ -109,6 +109,7 @@ let
 
       # Recommended for caching
       opcache
+      apcu
 
       # Optional extensions for improved functionality
       gd

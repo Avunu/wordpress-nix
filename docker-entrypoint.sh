@@ -106,6 +106,14 @@ mkdir -p /var/www/html/wp-content/mu-plugins
 cp -a /mu-plugins/. /var/www/html/wp-content/mu-plugins/
 chmod 755 /var/www/html/wp-content/mu-plugins
 
+# Install the APCu persistent object cache drop-in, unless disabled. It
+# self-disables at runtime if APCu is unavailable.
+if [ -f /object-cache.php ] && [ "${WORDPRESS_OBJECT_CACHE:-apcu}" != "none" ]; then
+    echo "Installing the APCu object cache drop-in (wp-content/object-cache.php)"
+    cp /object-cache.php /var/www/html/wp-content/object-cache.php
+    chmod 644 /var/www/html/wp-content/object-cache.php
+fi
+
 # Install the SQLite Database Integration plugin and the Cloudflare D1
 # database drop-in when the image bundles them and a proxy is configured.
 if [ -d /wordpress-plugins/sqlite-database-integration ]; then
