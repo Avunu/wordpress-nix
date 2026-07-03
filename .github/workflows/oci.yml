@@ -24,10 +24,10 @@ jobs:
 
     - name: Build Docker Images
       run: |
-        nix build .#wordpress-php82 .#wordpress-php83 .#wordpress-php84
-        docker load < result
-        docker load < result-1
-        docker load < result-2
+        nix build .#wordpress-php82 .#wordpress-php83 .#wordpress-php84 .#wordpress-d1-php83 .#wordpress-d1-php84
+        for image in result result-*; do
+          docker load < "$image"
+        done
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v4
@@ -59,14 +59,17 @@ jobs:
         IMAGES=($(docker images --format "{{.Repository}}:{{.Tag}}" | grep wordpress))
         
         for IMAGE in "${IMAGES[@]}"; do
-          PHP_VERSION=$(echo $IMAGE | sed -n 's/.*-php\([0-9]\+\).*/\1/p')
-          FULL_IMAGE_ID=$IMAGE_ID:php$PHP_VERSION
+          # Derive the tag from the image name: "wordpress-php83:latest"
+          # becomes "php83", "wordpress-d1-php84:latest" becomes "d1-php84".
+          TAG=$(echo $IMAGE | sed -e 's/^wordpress-//' -e 's/:.*$//')
+          FULL_IMAGE_ID=$IMAGE_ID:$TAG
           
           docker tag $IMAGE $FULL_IMAGE_ID
           docker push $FULL_IMAGE_ID
         done
 
-        # Tag one version as the default latest
-        DEFAULT_PHP_VERSION=83
-        docker tag $IMAGE_ID:php$DEFAULT_PHP_VERSION $IMAGE_ID:latest
+        # Tag the default aliases
+        docker tag $IMAGE_ID:php83 $IMAGE_ID:latest
         docker push $IMAGE_ID:latest
+        docker tag $IMAGE_ID:d1-php84 $IMAGE_ID:d1
+        docker push $IMAGE_ID:d1
