@@ -94,6 +94,10 @@ pkgs.dockerTools.buildLayeredImage {
     mkdir -p var/www/html
     cp ${../conf/wp-config.php} wp-config.php
 
+    # The APCu persistent object cache drop-in. The entrypoint installs it
+    # as wp-content/object-cache.php unless WORDPRESS_OBJECT_CACHE=none.
+    cp ${../conf/object-cache.php} object-cache.php
+
     # copy must-use plugins
     mkdir mu-plugins
     cp -r ${../mu-plugins}/. mu-plugins/
