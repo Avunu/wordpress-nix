@@ -62,8 +62,8 @@ let
 
     # optimizations
     extraConfig = lib.optionalString optimize ''
-      CC = "${pkgs.llvmPackages_19.clang}/bin/clang";
-      CXX = "${pkgs.llvmPackages_19.clang}/bin/clang++";
+      CC = "${pkgs.llvmPackages_22.clang}/bin/clang";
+      CXX = "${pkgs.llvmPackages_22.clang}/bin/clang++";
       CFLAGS="$CFLAGS ${optCFlags}"
       CXXFLAGS="$CXXFLAGS ${optCFlags}"
       LDFLAGS="$LDFLAGS -flto"
