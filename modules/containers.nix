@@ -15,9 +15,21 @@
   d1DriverSrc ? null,
   # Package set providing the Rust toolchain for the native extensions.
   rustPkgs ? pkgs,
+  # WordPress core is baked into the image (at /usr/src/wordpress) so cold
+  # starts don't re-download it, and so the exact static-asset set is known
+  # (the Cloudflare Worker serves those files from Worker Assets — keep this
+  # version in sync with wordpress-cloudflare's WORDPRESS_VERSION).
+  wordpressVersion ? "7.0.1",
+  wordpressHash ? "sha256-vkzmfQpcj/qYT26PXi+V2ji/F5tKJhk0zZJ9QkHwQoY=",
 }:
 let
   phpBuild = import ../lib/php.nix { inherit pkgs php; };
+
+  # WordPress core, extracted (fetchzip strips the leading "wordpress/" dir).
+  wordpressCore = pkgs.fetchzip {
+    url = "https://wordpress.org/wordpress-${wordpressVersion}.zip";
+    hash = wordpressHash;
+  };
 
   phpExtensions =
     if d1DriverSrc == null then
@@ -93,6 +105,12 @@ pkgs.dockerTools.buildLayeredImage {
     # Copy WordPress files
     mkdir -p var/www/html
     cp ${../conf/wp-config.php} wp-config.php
+
+    # Bake WordPress core into the image. The entrypoint installs it into the
+    # docroot on first boot (no runtime download).
+    mkdir -p usr/src
+    cp -r ${wordpressCore} usr/src/wordpress
+    chmod -R u+w usr/src/wordpress
 
     # The APCu persistent object cache drop-in. The entrypoint installs it
     # as wp-content/object-cache.php unless WORDPRESS_OBJECT_CACHE=none.

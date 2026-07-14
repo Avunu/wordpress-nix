@@ -30,30 +30,36 @@ fi
 # Default WordPress URL if not provided
 WORDPRESS_SOURCE_URL=${WORDPRESS_SOURCE_URL:-"https://wordpress.org/latest.zip"}
 
-# Function to download and install WordPress
+# Function to install WordPress: from the core baked into the image when
+# present (fast, offline), otherwise downloaded from WORDPRESS_SOURCE_URL.
 install_wordpress() {
-    echo "WordPress not found. Downloading and installing from: $WORDPRESS_SOURCE_URL"
-    wget -O wordpress.zip "$WORDPRESS_SOURCE_URL"
-    
-    # Create a temporary directory for extraction
-    TEMP_DIR="/tmp/wordpress"
-    mkdir -p "$TEMP_DIR"
-    unzip wordpress.zip -d "$TEMP_DIR"
-    
-    # Find WordPress files
-    WP_ROOT=$(find "$TEMP_DIR" -name wp-config-sample.php -exec dirname {} \; | head -n 1)
-    
-    if [ -z "$WP_ROOT" ]; then
-        echo "Error: WordPress files not found in the downloaded archive."
-        exit 1
+    if [ -f /usr/src/wordpress/wp-includes/version.php ]; then
+        echo "Installing bundled WordPress core from /usr/src/wordpress"
+        cp -r /usr/src/wordpress/. /var/www/html/
+        chmod -R u+w /var/www/html
+    else
+        echo "WordPress not found. Downloading and installing from: $WORDPRESS_SOURCE_URL"
+        wget -O wordpress.zip "$WORDPRESS_SOURCE_URL"
+
+        # Create a temporary directory for extraction
+        TEMP_DIR="/tmp/wordpress"
+        mkdir -p "$TEMP_DIR"
+        unzip wordpress.zip -d "$TEMP_DIR"
+
+        # Find WordPress files
+        WP_ROOT=$(find "$TEMP_DIR" -name wp-config-sample.php -exec dirname {} \; | head -n 1)
+
+        if [ -z "$WP_ROOT" ]; then
+            echo "Error: WordPress files not found in the downloaded archive."
+            exit 1
+        fi
+
+        # Move WordPress files to the correct location
+        mv "$WP_ROOT"/* /var/www/html/
+
+        # Clean up
+        rm -rf "$TEMP_DIR" wordpress.zip
     fi
-    
-    # Move WordPress files to the correct location
-    mv "$WP_ROOT"/* /var/www/html/
-    
-    # Clean up
-    rm -rf "$TEMP_DIR" wordpress.zip
-    # chown -R nobody:nobody /var/www/html
 
     # Import database if WORDPRESS_DB_URL is set
     if [ -n "${WORDPRESS_DB_URL:-}" ]; then
