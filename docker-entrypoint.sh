@@ -27,39 +27,17 @@ if [ "$PROC_TYPE" = "worker" ]; then
     run_wp_cron
 fi
 
-# Default WordPress URL if not provided
-WORDPRESS_SOURCE_URL=${WORDPRESS_SOURCE_URL:-"https://wordpress.org/latest.zip"}
-
-# Function to install WordPress: from the core baked into the image when
-# present (fast, offline), otherwise downloaded from WORDPRESS_SOURCE_URL.
+# Function to install WordPress from the core (+ site wp-content) baked into
+# the image. The image is the only source of code: no runtime downloads.
 install_wordpress() {
-    if [ -f /usr/src/wordpress/wp-includes/version.php ]; then
-        echo "Installing bundled WordPress core from /usr/src/wordpress"
-        cp -r /usr/src/wordpress/. /var/www/html/
-        chmod -R u+w /var/www/html
-    else
-        echo "WordPress not found. Downloading and installing from: $WORDPRESS_SOURCE_URL"
-        wget -O wordpress.zip "$WORDPRESS_SOURCE_URL"
-
-        # Create a temporary directory for extraction
-        TEMP_DIR="/tmp/wordpress"
-        mkdir -p "$TEMP_DIR"
-        unzip wordpress.zip -d "$TEMP_DIR"
-
-        # Find WordPress files
-        WP_ROOT=$(find "$TEMP_DIR" -name wp-config-sample.php -exec dirname {} \; | head -n 1)
-
-        if [ -z "$WP_ROOT" ]; then
-            echo "Error: WordPress files not found in the downloaded archive."
-            exit 1
-        fi
-
-        # Move WordPress files to the correct location
-        mv "$WP_ROOT"/* /var/www/html/
-
-        # Clean up
-        rm -rf "$TEMP_DIR" wordpress.zip
+    if [ ! -f /usr/src/wordpress/wp-includes/version.php ]; then
+        echo "Error: no WordPress core baked at /usr/src/wordpress — refusing to start." >&2
+        echo "Images must be built with the wordpress-nix builders (lib.mkSiteImage)." >&2
+        exit 1
     fi
+    echo "Installing bundled WordPress from /usr/src/wordpress"
+    cp -r /usr/src/wordpress/. /var/www/html/
+    chmod -R u+w /var/www/html
 
     # Import database if WORDPRESS_DB_URL is set
     if [ -n "${WORDPRESS_DB_URL:-}" ]; then
@@ -83,11 +61,34 @@ import_db_mysql() {
     rm db_dump.sql
 }
 
-# function to set up the salts
+# Function to set up the salts: from the WORDPRESS_SALTS secret when provided
+# (the 8-define api.wordpress.org-format block — shared with the backend
+# plane so both planes agree), otherwise generated locally. Never fetched
+# from the network.
 setup_salts() {
     echo "Setting up salts"
-    echo "<?php" > /var/www/html/wp-salts.php
-    wget -qO- https://api.wordpress.org/secret-key/1.1/salt/ >> /var/www/html/wp-salts.php
+    if [ -n "${WORDPRESS_SALTS:-}" ]; then
+        count=$(printf '%s\n' "$WORDPRESS_SALTS" | grep -c "define(") || true
+        if [ "$count" -ne 8 ]; then
+            echo "Error: WORDPRESS_SALTS must contain exactly 8 define(...) lines (got $count)." >&2
+            exit 1
+        fi
+        {
+            echo "<?php"
+            printf '%s\n' "$WORDPRESS_SALTS"
+        } > /var/www/html/wp-salts.php
+    else
+        echo "WORDPRESS_SALTS not set; generating local salts (fine for dev; set the secret in production)"
+        php -r '
+            $keys = array("AUTH_KEY","SECURE_AUTH_KEY","LOGGED_IN_KEY","NONCE_KEY","AUTH_SALT","SECURE_AUTH_SALT","LOGGED_IN_SALT","NONCE_SALT");
+            $out = "<?php\n";
+            foreach ($keys as $k) {
+                $out .= sprintf("define(%s%s%s, %s%s%s);\n", chr(39), $k, chr(39), chr(39), bin2hex(random_bytes(32)), chr(39));
+            }
+            file_put_contents("/var/www/html/wp-salts.php", $out);
+        '
+    fi
+    chmod 640 /var/www/html/wp-salts.php 2>/dev/null || true
 }
 
 # Always copy the custom wp-config.php
@@ -105,11 +106,12 @@ if [ ! -f /var/www/html/wp-salts.php ]; then
     setup_salts
 fi
 
-# Always copy the custom mu-plugins
-echo "Copying custom mu-plugins"
-rm -rf /var/www/html/wp-content/mu-plugins
+# Refresh the platform mu-plugins (platform-*.php) without disturbing the
+# site's own mu-plugins (which arrive baked in wp-content from git).
+echo "Installing platform mu-plugins"
 mkdir -p /var/www/html/wp-content/mu-plugins
-cp -a /mu-plugins/. /var/www/html/wp-content/mu-plugins/
+rm -f /var/www/html/wp-content/mu-plugins/platform-*.php
+cp /mu-plugins/platform-*.php /var/www/html/wp-content/mu-plugins/
 chmod 755 /var/www/html/wp-content/mu-plugins
 
 # Install the APCu persistent object cache drop-in, unless disabled. It

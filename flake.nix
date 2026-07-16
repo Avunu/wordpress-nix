@@ -38,20 +38,56 @@
         mkPhp = import ./lib/php.nix; # { pkgs, php ? pkgs.php83, optimize ? true, ... }
         mkFrankenphp = import ./lib/frankenphp.nix; # { pkgs, php }
         mkWordPressSite = import ./lib/site.nix; # { pkgs, src, php ? ..., plugins ? {}, themes ? {} }
+
+        # Per-site OCI image: the pinned core + the site repo's wp-content,
+        # with the D1 driver stack included by default. The primary builder
+        # for site flakes; this flake's own package variants use it too.
+        #   mkSiteImage { inherit pkgs; imageName = "site-foo"; wpContent = ./wp-content; }
+        mkSiteImage =
+          {
+            pkgs,
+            php ? pkgs.php84,
+            imageName,
+            tag ? "latest",
+            wpContent ? null,
+            plugins ? { },
+            themes ? { },
+            d1 ? true,
+            wordpressVersion ? null,
+            wordpressHash ? null,
+          }:
+          import ./modules/containers.nix {
+            inherit
+              pkgs
+              php
+              imageName
+              tag
+              wpContent
+              plugins
+              themes
+              wordpressVersion
+              wordpressHash
+              ;
+            d1DriverSrc = if d1 then sqlite-database-integration else null;
+            rustPkgs = nixpkgs-rust.legacyPackages.${pkgs.stdenv.hostPlatform.system};
+          };
+
+        # The Worker-Assets static tree for the same pinned core + wp-content.
+        #   mkStaticAssets { inherit pkgs; wpContent = ./wp-content; }
+        mkStaticAssets = import ./lib/static-assets.nix;
       };
     }
     // flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        mkImage = php: imageName: import ./modules/containers.nix { inherit pkgs php imageName; };
-        mkD1Image =
+        mkImage =
           php: imageName:
-          import ./modules/containers.nix {
+          self.lib.mkSiteImage {
             inherit pkgs php imageName;
-            d1DriverSrc = sqlite-database-integration;
-            rustPkgs = nixpkgs-rust.legacyPackages.${system};
+            d1 = false;
           };
+        mkD1Image = php: imageName: self.lib.mkSiteImage { inherit pkgs php imageName; };
       in
       {
         packages = {
