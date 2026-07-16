@@ -53,6 +53,12 @@ export function guard( request, env ) {
 		if ( ADMIN_PASSTHROUGH.has( path ) ) {
 			return null;
 		}
+		// Transition-only escape hatch for sites that have not stood up the
+		// Zero-Trust admin backend yet (e.g. mid-migration). The cache still
+		// bypasses wp-admin; remove the var as soon as the backend exists.
+		if ( env.GUARD_ALLOW_WP_ADMIN === '1' ) {
+			return null;
+		}
 		// Send editors to the real admin behind Cloudflare Access. The
 		// target is discoverable anyway and Access-gated, so the redirect
 		// leaks nothing; a 404 would just generate support tickets.

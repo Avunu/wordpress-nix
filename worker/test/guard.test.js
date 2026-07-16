@@ -62,6 +62,12 @@ describe( 'guard', () => {
 		expect( guard( bearer, env ) ).toBeNull();
 	} );
 
+	it( 'passes wp-admin through when the transition escape hatch is set', () => {
+		expect( guard( req( '/wp-admin/index.php' ), { ...env, GUARD_ALLOW_WP_ADMIN: '1' } ) ).toBeNull();
+		// Hard blocks are not affected by the escape hatch.
+		expect( guard( req( '/xmlrpc.php' ), { ...env, GUARD_ALLOW_WP_ADMIN: '1' } ).status ).toBe( 403 );
+	} );
+
 	it( 'leaves ordinary REST and page requests alone', () => {
 		expect( guard( req( '/wp-json/wp/v2/posts' ), env ) ).toBeNull();
 		expect( guard( req( '/2026/07/hello-world/' ), env ) ).toBeNull();
