@@ -1,17 +1,38 @@
 # NixOS module: deploy a single WordPress instance served by FrankenPHP
 # (standalone — Caddy terminates TLS itself via ACME; no nginx in front).
 #
-# Two source modes:
-#   * state — WordPress core lives in a writable ${stateDir}/www, downloaded on
-#             first boot with wp-cli; fully mutable (admin manages core / plugins
-#             / themes via the UI). Best for flexible, server-specific instances.
-#   * git   — source.path (a flake input / store path) IS the read-only document
-#             root; ${stateDir}/www is a writable symlink farm into it with the
-#             uploads/cache/upgrade dirs kept real. Best for source-managed sites.
+# Three source modes:
+#   * state   — WordPress core lives in a writable ${stateDir}/www, downloaded on
+#               first boot with wp-cli; fully mutable (admin manages core / plugins
+#               / themes via the UI). Best for flexible, server-specific instances.
+#   * git     — source.path (a flake input / store path) IS the read-only document
+#               root; ${stateDir}/www is a writable symlink farm into it with the
+#               uploads/cache/upgrade dirs kept real. Sets DISALLOW_FILE_MODS.
+#   * managed — the split-plane admin backend: core is symlinked from a PINNED
+#               store docroot (lib/wordpress-core.nix — never self-updates), while
+#               wp-content is fully mutable and seeded from the site's git repo
+#               (source.siteRepo), so wp-admin file mods work and gitium can
+#               version them. Pair with database.type = "d1" to share the public
+#               frontend's database.
+#
+# Two database modes:
+#   * mysql — local MariaDB (createLocally) or external, as before.
+#   * d1    — no local database: the SQLite-driver D1 backend connects to the
+#             site Worker's authenticated /__d1 proxy (database.d1.*). Requires
+#             consuming this module via the flake's nixosModules (which injects
+#             the driver source).
 #
 # The PHP version is the `php` option; the module wraps it with the same
 # optimized ZTS build (lib/php.nix) + FrankenPHP (lib/frankenphp.nix) used by the
 # OCI images.
+#
+# Outer layer: the flake injects the sqlite-database-integration source and the
+# Rust nixpkgs for the native extensions; both default to null so importing the
+# file directly still works for mysql-only deployments.
+{
+  d1DriverSrc ? null,
+  rustNixpkgs ? null,
+}:
 {
   config,
   lib,
@@ -33,6 +54,9 @@ let
 
   cfg = config.services.wordpress-nix;
 
+  managed = cfg.source.type == "managed";
+  d1 = cfg.database.type == "d1";
+
   php = import ../lib/php.nix {
     inherit pkgs;
     php = cfg.php;
@@ -45,8 +69,71 @@ let
 
   docroot = "${cfg.stateDir}/www";
   secretsFile = "${cfg.stateDir}/wp-secrets.php";
+  runtimeSaltsFile = "/run/wordpress/wp-salts.php";
 
-  dbLocal = cfg.database.createLocally;
+  # --- D1 database mode plumbing ---
+  # Native wp_mysql_parser + wp_d1_client extensions, mirroring the OCI image.
+  phpExtensions =
+    if d1 then
+      import ../lib/php-extensions.nix {
+        inherit pkgs php;
+        src = d1DriverSrc;
+        rustPkgs =
+          if rustNixpkgs != null then
+            rustNixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}
+          else
+            pkgs;
+      }
+    else
+      null;
+
+  # FrankenPHP's embedded PHP does not inherit the CLI wrapper's compiled-in
+  # scan directory; set it explicitly (buildEnv config + native extensions).
+  phpIniScanDir = lib.concatStringsSep ":" (
+    [ "${php}/lib" ] ++ optional (phpExtensions != null) "${phpExtensions.iniDir}"
+  );
+
+  # The SQLite Database Integration plugin, dereferenced (its wp-includes/
+  # database tree is symlinked in the repo).
+  d1Plugin =
+    if d1 then
+      pkgs.runCommandLocal "sqlite-database-integration-plugin" { } ''
+        cp -rL ${d1DriverSrc}/packages/plugin-sqlite-database-integration $out
+      ''
+    else
+      null;
+
+  # The db.php drop-in, pointed at the store copy of the plugin. Installed
+  # into wp-content by wordpress-init (a drop-in, so gitium ignores it).
+  d1DropIn =
+    if d1 then
+      pkgs.runCommandLocal "wordpress-d1-db-drop-in" { } ''
+        substitute ${d1Plugin}/wp-includes/database/d1/db.copy $out \
+          --replace-fail '{SQLITE_IMPLEMENTATION_FOLDER_PATH}' '${d1Plugin}'
+      ''
+    else
+      null;
+
+  # --- managed source mode plumbing ---
+  # The pinned core with the generated wp-config.php at its root. Core entries
+  # are symlinked from the docroot into this tree; PHP resolves __FILE__
+  # through the symlinks, so ABSPATH is this store path and wp-config.php is
+  # found right here — while WP_CONTENT_DIR points back at the mutable tree.
+  wordpressCore = import ../lib/wordpress-core.nix { inherit pkgs; };
+  managedCore =
+    if managed then
+      pkgs.runCommandLocal "wordpress-managed-core" { } ''
+        mkdir $out
+        cp -rL ${wordpressCore}/. $out/
+        chmod -R u+w $out
+        rm -rf $out/wp-content
+        rm -f $out/wp-config-sample.php
+        cp ${wpConfig} $out/wp-config.php
+      ''
+    else
+      null;
+
+  dbLocal = cfg.database.createLocally && !d1;
   # Local DB uses MariaDB unix_socket auth (passwordless, OS-user matched);
   # external DB connects over TCP with a password.
   dbHost =
@@ -94,8 +181,18 @@ let
     <?php
     // Managed by services.wordpress-nix — regenerated on activation; do not edit.
 
-    // Database settings
-    define('DB_HOST', '${dbHost}');
+    ${optionalString managed ''
+      // Managed mode: core lives in the (read-only) store; content is mutable.
+      define('WP_CONTENT_DIR', '${docroot}/wp-content');
+    ''}
+    ${optionalString d1 ''
+      // Cloudflare D1 via the site Worker's authenticated proxy (db.php drop-in).
+      define('WP_D1_PROXY_URL', '${cfg.database.d1.proxyUrl}');
+      define('WP_D1_PROXY_TOKEN', trim((string) @file_get_contents('${cfg.database.d1.tokenFile}')));
+      define('WP_D1_HTTP_TIMEOUT_MS', ${toString cfg.database.d1.requestTimeoutMs});
+    ''}
+    // Database settings${optionalString d1 " (placeholders — the D1 drop-in owns the connection)"}
+    define('DB_HOST', '${if d1 then "localhost" else dbHost}');
     define('DB_USER', '${cfg.database.user}');
     define('DB_NAME', '${cfg.database.name}');
     define('DB_CHARSET', 'utf8');
@@ -113,10 +210,23 @@ let
       define('WP_SITEURL', 'https://${cfg.domain}');
     ''}
     define('FS_METHOD', 'direct');
-    define('WP_AUTO_UPDATE_CORE', 'minor');
+    ${
+      if managed then
+        ''
+          // The core version is pinned by the platform flake; never self-update.
+          define('WP_AUTO_UPDATE_CORE', false);
+          define('AUTOMATIC_UPDATER_DISABLED', true);
+        ''
+      else
+        "define('WP_AUTO_UPDATE_CORE', 'minor');"
+    }
     define('CONCATENATE_SCRIPTS', false);
-    define('DISALLOW_FILE_EDIT', true);
+    ${optionalString (!managed) "define('DISALLOW_FILE_EDIT', true);"}
     ${optionalString (cfg.source.type == "git") "define('DISALLOW_FILE_MODS', true);"}
+    ${optionalString (managed && cfg.source.siteRepo.deployKeyFile != null) ''
+      // gitium authenticates pushes with the same deploy key init cloned with.
+      define('GIT_KEY_FILE', '${cfg.source.siteRepo.deployKeyFile}');
+    ''}
     define('DISABLE_WP_CRON', true);
     define('WP_CACHE', true);
     define('WP_POST_REVISIONS', 5);
@@ -153,6 +263,42 @@ let
             ${getExe wpCli} core download --path="$DOCROOT" --version=${lib.escapeShellArg cfg.source.version}
           fi
         ''
+      else if managed then
+        ''
+          # Managed mode: seed the site repo (once), then (re)point the core
+          # symlinks at the pinned store docroot — atomic and idempotent, so a
+          # platform core bump takes effect on the next start.
+          ${optionalString (cfg.source.siteRepo.url != null) ''
+            if [ ! -e "$DOCROOT/.git" ]; then
+              echo "Seeding site repo ${cfg.source.siteRepo.url}"
+              git -C "$DOCROOT" init -b ${lib.escapeShellArg cfg.source.siteRepo.branch}
+              git -C "$DOCROOT" remote add origin ${lib.escapeShellArg cfg.source.siteRepo.url}
+              ${optionalString (cfg.source.siteRepo.deployKeyFile != null) ''
+                export GIT_SSH_COMMAND="ssh -i ${lib.escapeShellArg cfg.source.siteRepo.deployKeyFile} -o StrictHostKeyChecking=accept-new"
+              ''}
+              git -C "$DOCROOT" fetch origin ${lib.escapeShellArg cfg.source.siteRepo.branch}
+              git -C "$DOCROOT" checkout -f ${lib.escapeShellArg cfg.source.siteRepo.branch}
+            fi
+          ''}
+
+          CORE=${managedCore}
+          for entry in "$CORE"/*; do
+            base=$(basename "$entry")
+            case "$base" in
+              wp-content|wp-config.php) continue ;;
+            esac
+            ln -sfn "$entry" "$DOCROOT/$base"
+          done
+
+          mkdir -p "$DOCROOT/wp-content/plugins" "$DOCROOT/wp-content/themes" \
+                   "$DOCROOT/wp-content/mu-plugins" "$DOCROOT/wp-content/languages"
+
+          # A themeless site white-screens: seed the core default themes on
+          # first boot (they become part of the site repo via gitium).
+          if [ -z "$(ls -A "$DOCROOT/wp-content/themes" 2>/dev/null)" ]; then
+            cp -aL --no-preserve=mode ${wordpressCore}/wp-content/themes/. "$DOCROOT/wp-content/themes/"
+          fi
+        ''
       else
         ''
           # Git mode: rebuild the writable symlink farm into the read-only store docroot.
@@ -173,7 +319,7 @@ let
         ''
     }
 
-    # Writable content dirs (both modes; also created by tmpfiles).
+    # Writable content dirs (all modes; also created by tmpfiles).
     mkdir -p "$DOCROOT/wp-content/uploads" "$DOCROOT/wp-content/cache" "$DOCROOT/wp-content/upgrade"
 
     ${optionalString (cfg.source.type == "state") (
@@ -182,17 +328,52 @@ let
         cp -aL --no-preserve=mode ${p}/. "$DOCROOT/wp-content/mu-plugins/"
       '') cfg.muPlugins
     )}
+    ${optionalString managed (
+      # Refresh platform mu-plugins without disturbing the site's own
+      # (gitium ignores platform-*.php via the site repo's .gitignore).
+      ''
+        rm -f "$DOCROOT/wp-content/mu-plugins"/platform-*.php
+      ''
+      + concatMapStringsSep "\n" (p: ''
+        cp -aL --no-preserve=mode ${p}/. "$DOCROOT/wp-content/mu-plugins/"
+      '') cfg.muPlugins
+    )}
 
-    # --- secrets: salts once, DB password every run (so rotation propagates) ---
-    if [ ! -f "$SECRETS" ]; then
-      {
-        echo "<?php"
-        for k in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY \
-                 AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
-          printf "define('%s', '%s');\n" "$k" "$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
-        done
-      } > "$SECRETS"
-    fi
+    ${optionalString d1 ''
+      # The D1 database drop-in (regenerated each boot; a drop-in, so gitium
+      # ignores it and WordPress loads it in place of MySQL).
+      install -m 0644 ${d1DropIn} "$DOCROOT/wp-content/db.php"
+    ''}
+
+    # --- secrets: salts (provided or generated once), DB password every run ---
+    ${
+      if cfg.saltsFile != null then
+        ''
+          # Platform-shared salts: materialize to tmpfs so the secret never
+          # rests on the state filesystem; regenerate the require shim.
+          {
+            echo "<?php"
+            cat ${lib.escapeShellArg cfg.saltsFile}
+          } > ${runtimeSaltsFile}
+          chmod 400 ${runtimeSaltsFile}
+          {
+            echo "<?php"
+            echo "require '${runtimeSaltsFile}';"
+          } > "$SECRETS"
+        ''
+      else
+        ''
+          if [ ! -f "$SECRETS" ]; then
+            {
+              echo "<?php"
+              for k in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY \
+                       AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
+                printf "define('%s', '%s');\n" "$k" "$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
+              done
+            } > "$SECRETS"
+          fi
+        ''
+    }
 
     sed -i "/define('DB_PASSWORD'/d" "$SECRETS"
     if [ -n "''${CREDENTIALS_DIRECTORY:-}" ] && [ -f "''${CREDENTIALS_DIRECTORY:-}/db_password" ]; then
@@ -204,7 +385,7 @@ let
     fi
     chmod 600 "$SECRETS"
 
-    ${optionalString cfg.source.manageWpConfig ''
+    ${optionalString (cfg.source.manageWpConfig && !managed) ''
       rm -f "$DOCROOT/wp-config.php"
       cp ${wpConfig} "$DOCROOT/wp-config.php"
       chmod 644 "$DOCROOT/wp-config.php"
@@ -216,6 +397,7 @@ let
   wpWrapper = pkgs.writeShellScriptBin "wp" ''
     export HOME=${lib.escapeShellArg cfg.stateDir}
     export WP_CLI_CACHE_DIR=${lib.escapeShellArg "${cfg.stateDir}/.wp-cli/cache"}
+    export PHP_INI_SCAN_DIR=${lib.escapeShellArg phpIniScanDir}
     exec ${getExe wpCli} --path=${lib.escapeShellArg docroot} "$@"
   '';
 
@@ -223,7 +405,13 @@ let
     HOME = cfg.stateDir;
     WP_CLI_CACHE_DIR = "${cfg.stateDir}/.wp-cli/cache";
     SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    # Applies to FrankenPHP's embedded PHP and to wp-cli alike (the D1
+    # native extensions load from here in d1 mode).
+    PHP_INI_SCAN_DIR = phpIniScanDir;
   };
+
+  # gitium shells out to git over ssh from web requests and cron.
+  gitPath = optional managed pkgs.git ++ optional managed pkgs.openssh;
 in
 {
   options.services.wordpress-nix = {
@@ -287,9 +475,18 @@ in
 
     source = {
       type = mkOption {
-        type = types.enum [ "state" "git" ];
+        type = types.enum [
+          "state"
+          "git"
+          "managed"
+        ];
         default = "state";
-        description = "`state` = mutable core in ${docroot}; `git` = read-only source.path document root.";
+        description = ''
+          `state` = mutable core in ${docroot}; `git` = read-only source.path
+          document root; `managed` = pinned store core (symlinked) + mutable,
+          git-seeded wp-content with file mods allowed (the split-plane admin
+          backend).
+        '';
       };
       version = mkOption {
         type = types.str;
@@ -302,6 +499,28 @@ in
         example = lib.literalExpression "inputs.my-wordpress";
         description = "Git mode: a store path / flake input that is the WordPress document root (read-only).";
       };
+      siteRepo = {
+        url = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "git@github.com:Avunu/site-example.git";
+          description = "Managed mode: the site repo cloned into the WP root on first boot (gitium pushes back to it).";
+        };
+        branch = mkOption {
+          type = types.str;
+          default = "main";
+          description = "Managed mode: the branch to seed from.";
+        };
+        deployKeyFile = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "/run/agenix/site-git-deploy-key";
+          description = ''
+            Runtime path to an SSH deploy key (never in the Nix store) used
+            for the initial clone and, via GIT_KEY_FILE, by gitium's pushes.
+          '';
+        };
+      };
       manageWpConfig = mkOption {
         type = types.bool;
         default = true;
@@ -309,7 +528,49 @@ in
       };
     };
 
+    saltsFile = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "/run/agenix/site-wp-salts";
+      description = ''
+        Runtime path to the authentication salts (the 8-define block, without
+        the PHP opening tag) — shared with the frontend plane's
+        WORDPRESS_SALTS secret. Unset: salts are generated once locally.
+      '';
+    };
+
     database = {
+      type = mkOption {
+        type = types.enum [
+          "mysql"
+          "d1"
+        ];
+        default = "mysql";
+        description = ''
+          `mysql` = MariaDB/MySQL (local or external); `d1` = the shared
+          Cloudflare D1 database through the site Worker's authenticated
+          /__d1 proxy (no local database at all).
+        '';
+      };
+      d1 = {
+        proxyUrl = mkOption {
+          type = types.str;
+          default = "";
+          example = "https://example.com/__d1";
+          description = "Base URL of the site Worker's authenticated D1 proxy route.";
+        };
+        tokenFile = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "/run/agenix/site-d1-proxy-token";
+          description = "Runtime path to the bearer token (matches the Worker's D1_PROXY_TOKEN secret).";
+        };
+        requestTimeoutMs = mkOption {
+          type = types.int;
+          default = 20000;
+          description = "HTTP request timeout for D1 proxy calls.";
+        };
+      };
       createLocally = mkEnableOption "a local MariaDB (passwordless unix_socket auth)";
       package = mkOption {
         type = types.package;
@@ -395,6 +656,22 @@ in
         assertion = !dbLocal || cfg.database.user == cfg.user;
         message = "services.wordpress-nix: local DB uses unix_socket auth, so database.user must equal user.";
       }
+      {
+        assertion = !d1 || d1DriverSrc != null;
+        message = "services.wordpress-nix: database.type = \"d1\" requires consuming the module via the flake's nixosModules (it injects the driver source).";
+      }
+      {
+        assertion = !d1 || (cfg.database.d1.proxyUrl != "" && cfg.database.d1.tokenFile != null);
+        message = "services.wordpress-nix: database.type = \"d1\" requires database.d1.proxyUrl and database.d1.tokenFile.";
+      }
+      {
+        assertion = !d1 || !cfg.database.createLocally;
+        message = "services.wordpress-nix: database.type = \"d1\" is remote-only; disable database.createLocally.";
+      }
+      {
+        assertion = !managed || cfg.source.manageWpConfig;
+        message = "services.wordpress-nix: managed mode generates wp-config.php into the store core; manageWpConfig must stay true.";
+      }
     ];
 
     users.users = mkIf (cfg.user == "wordpress") {
@@ -416,7 +693,10 @@ in
       "d ${docroot}/wp-content/uploads       0750 ${cfg.user} ${cfg.group} -"
       "d ${docroot}/wp-content/cache         0750 ${cfg.user} ${cfg.group} -"
       "d ${docroot}/wp-content/upgrade       0750 ${cfg.user} ${cfg.group} -"
-    ];
+    ]
+    ++ optional (
+      cfg.saltsFile != null
+    ) "d /run/wordpress                      0750 ${cfg.user} ${cfg.group} -";
 
     systemd.services.wordpress-init = {
       description = "Initialize WordPress runtime state";
@@ -429,14 +709,15 @@ in
         pkgs.coreutils
         pkgs.gnused
         (cfg.database.package.client or cfg.database.package)
-      ];
+      ]
+      ++ gitPath;
       environment = serviceEnv;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         User = cfg.user;
         Group = cfg.group;
-        ReadWritePaths = [ cfg.stateDir ];
+        ReadWritePaths = [ cfg.stateDir ] ++ optional (cfg.saltsFile != null) "/run/wordpress";
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;
@@ -460,7 +741,8 @@ in
       path = [
         wpCli
         (cfg.database.package.client or cfg.database.package)
-      ];
+      ]
+      ++ gitPath;
       environment = serviceEnv // {
         XDG_DATA_HOME = "${cfg.stateDir}/caddy/data";
         XDG_CONFIG_HOME = "${cfg.stateDir}/caddy/config";
@@ -492,7 +774,8 @@ in
       path = [
         wpCli
         (cfg.database.package.client or cfg.database.package)
-      ];
+      ]
+      ++ gitPath;
       environment = serviceEnv;
       serviceConfig = {
         Type = "oneshot";

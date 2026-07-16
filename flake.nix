@@ -30,8 +30,13 @@
     }:
     {
       # Deploy WordPress directly on NixOS. See readme.md for usage.
-      nixosModules.default = import ./modules/nixos.nix;
-      nixosModules.wordpress-nix = import ./modules/nixos.nix;
+      # The flake wiring injects the D1 driver source + Rust toolchain pin,
+      # enabling `database.type = "d1"` and the managed backend mode.
+      nixosModules.default = import ./modules/nixos.nix {
+        d1DriverSrc = sqlite-database-integration;
+        rustNixpkgs = nixpkgs-rust;
+      };
+      nixosModules.wordpress-nix = self.nixosModules.default;
 
       # Composable builders, reused by the container build and available to consumers.
       lib = {
