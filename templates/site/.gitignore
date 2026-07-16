@@ -1,6 +1,6 @@
 # --- Platform (build artifacts and generated files) ---
-/public/
-/.worker/
+/public
+/.worker
 /.wrangler/
 /.dev.vars
 /result
