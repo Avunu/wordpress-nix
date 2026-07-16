@@ -1,0 +1,44 @@
+# Test the platform edge Worker and its nix bundle. Tests run once here,
+# centrally — site repos carry no worker code or tests.
+name: worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - "lib/worker.nix"
+      - "flake.lock"
+      - ".github/workflows/worker.yml"
+  pull_request:
+    paths:
+      - "worker/**"
+      - "lib/worker.nix"
+      - "flake.lock"
+      - ".github/workflows/worker.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+
+      - name: Materialize the pinned sqlite-database-integration source
+        run: nix build .#sqlite-driver-src -o .sqlite-src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run the worker test suite
+        working-directory: worker
+        env:
+          WP_SQLITE_D1_PROXY_SRC: ${{ github.workspace }}/.sqlite-src/packages/d1-proxy-worker/src/handler.js
+        run: |
+          npm ci
+          npm test
+
+      - name: Build the worker bundle
+        run: nix build .#worker

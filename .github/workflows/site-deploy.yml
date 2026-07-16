@@ -1,0 +1,90 @@
+# Reusable deploy pipeline for WordPress-on-Cloudflare site repos.
+#
+# A site repo invokes this with a ~10-line caller workflow:
+#
+#   jobs:
+#     deploy:
+#       uses: Avunu/wordpress/.github/workflows/site-deploy.yml@main
+#       with: { ref: "${{ inputs.ref || github.sha }}" }
+#       secrets: inherit
+#
+# Required in the site repo:
+#   secrets: CLOUDFLARE_API_TOKEN (Workers Scripts:Edit + Containers:Edit),
+#            CACHE_PURGE_SECRET (optional, enables the post-deploy purge)
+#   vars:    CLOUDFLARE_ACCOUNT_ID, PURGE_URL (optional,
+#            e.g. https://example.com/__cache/purge)
+#
+# Pipeline changes made here propagate to every site on its next run; pin
+# the caller to a tag instead of @main for controlled rollout.
+name: site-deploy
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to (re)deploy — the rollback entry point.
+        type: string
+        required: false
+      site-name:
+        description: Image name in the Cloudflare registry (defaults to the repo name).
+        type: string
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Collapse gitium push storms: only the newest deploy survives.
+    concurrency:
+      group: site-deploy-${{ github.repository }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+
+      - name: Build image, static assets, and worker bundle
+        run: |
+          nix build .#image -o image-result
+          nix build .#static-assets -o assets-result
+          nix build .#worker -o worker-result
+          rm -rf public .worker
+          cp -rL assets-result public
+          cp -rL worker-result .worker
+
+      - name: Push the container image to the Cloudflare registry
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          SITE="${{ inputs.site-name || github.event.repository.name }}"
+          TAG="${GITHUB_SHA::12}"
+          LOADED=$(docker load < image-result | sed -n 's/^Loaded image: //p')
+          docker tag "$LOADED" "$SITE:$TAG"
+          npx --yes wrangler@4 containers push "$SITE:$TAG" | tee push.log
+          # The pushed reference (registry.cloudflare.com/<account>/<name>:<tag>).
+          REF=$(sed -n 's/.*\(registry\.cloudflare\.com[^ ]*\).*/\1/p' push.log | tail -1)
+          if [ -z "$REF" ]; then
+            REF="registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID}/${SITE}:${TAG}"
+          fi
+          echo "IMAGE_REF=$REF" >> "$GITHUB_ENV"
+
+      - name: Deploy the Worker (container + assets + bundle)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          sed -i "s|__IMAGE_REF__|${IMAGE_REF}|" wrangler.jsonc
+          npx --yes wrangler@4 deploy
+
+      - name: Purge the edge page cache
+        if: ${{ vars.PURGE_URL != '' }}
+        env:
+          CACHE_PURGE_SECRET: ${{ secrets.CACHE_PURGE_SECRET }}
+        run: |
+          if [ -n "$CACHE_PURGE_SECRET" ]; then
+            curl -fsS -X POST "${{ vars.PURGE_URL }}" \
+              -H "X-WP-Cache-Secret: ${CACHE_PURGE_SECRET}" || echo "purge failed (non-fatal)"
+          fi

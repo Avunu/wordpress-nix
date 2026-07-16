@@ -75,6 +75,26 @@
         # The Worker-Assets static tree for the same pinned core + wp-content.
         #   mkStaticAssets { inherit pkgs; wpContent = ./wp-content; }
         mkStaticAssets = import ./lib/static-assets.nix;
+
+        # The bundled edge Worker (site-agnostic; one artifact per platform
+        # version). `entry` is the escape hatch for site-custom routes.
+        #   mkSiteWorker { inherit pkgs; }
+        mkSiteWorker =
+          {
+            pkgs,
+            entry ? null,
+          }:
+          import ./lib/worker.nix {
+            inherit pkgs entry;
+            sqliteDriverSrc = sqlite-database-integration;
+          };
+      };
+
+      # `nix flake init -t github:Avunu/wordpress#site` scaffolds a new
+      # thin site repo (payload + identity + pins only).
+      templates.site = {
+        path = ./templates/site;
+        description = "A WordPress-on-Cloudflare site: wp-content payload, wrangler identity, flake pin, CI caller";
       };
     }
     // flake-utils.lib.eachDefaultSystem (
@@ -99,7 +119,24 @@
           # wp_d1_client extensions. Configure with WP_D1_PROXY_URL.
           wordpress-d1-php83 = mkD1Image pkgs.php83 "wordpress-d1-php83";
           wordpress-d1-php84 = mkD1Image pkgs.php84 "wordpress-d1-php84";
+          # The bundled site-agnostic edge Worker.
+          worker = self.lib.mkSiteWorker { inherit pkgs; };
+          # The pinned sqlite-database-integration source, materializable in
+          # CI (worker tests alias @wp-sqlite/d1-proxy-worker from it).
+          sqlite-driver-src = pkgs.runCommandLocal "sqlite-driver-src" { } ''
+            ln -s ${sqlite-database-integration} $out
+          '';
           default = self.packages.${system}.wordpress-php83;
+        };
+
+        # Toolchain for site repos and platform development: `nix develop`.
+        devShells.default = pkgs.mkShell {
+          packages = with pkgs; [
+            nodejs_22
+            wrangler
+            gum
+            skopeo
+          ];
         };
       }
       // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {

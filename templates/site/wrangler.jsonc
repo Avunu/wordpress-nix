@@ -1,0 +1,93 @@
+// The site's identity: names, resource IDs, URLs, and per-site WordPress
+// configuration. This is the one genuinely per-site file — all Worker code,
+// the container image, and the static assets are built from the platform
+// pin in flake.lock.
+{
+	"name": "CHANGEME-site-slug",
+	"main": ".worker/index.js",
+	"compatibility_date": "2026-06-01",
+	"observability": {
+		"enabled": true
+	},
+
+	// Static assets (populated by `nix build .#static-assets` in CI): any
+	// path that exists here is served from the edge before the Worker runs.
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS"
+	},
+
+	"containers": [
+		{
+			"class_name": "WordPressContainer",
+			// Substituted by CI with the pushed registry reference
+			// (registry.cloudflare.com/<account>/<name>:<git-sha>).
+			"image": "__IMAGE_REF__",
+			"max_instances": 1,
+			"instance_type": "standard-2"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "WORDPRESS",
+				"class_name": "WordPressContainer"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["WordPressContainer"]
+		}
+	],
+
+	// wrangler d1 create <slug>  → paste name + id here.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "CHANGEME",
+			"database_id": "CHANGEME",
+			"remote": true
+		}
+	],
+
+	// wrangler kv namespace create CACHE_KV  → paste id here.
+	"kv_namespaces": [
+		{
+			"binding": "CACHE_KV",
+			"id": "CHANGEME"
+		}
+	],
+
+	"vars": {
+		// The site's public URL (workers.dev while testing, the custom
+		// domain once routes are enabled below).
+		"WORDPRESS_URL": "https://CHANGEME.example.com",
+		// The Zero-Trust-gated admin backend; /wp-admin redirects here.
+		"BACKEND_ADMIN_URL": "https://CHANGEME.avunu.io",
+		"WORDPRESS_DB_NAME": "wordpress",
+
+		// Frontend-plane posture: immutable code, cron owned by the backend.
+		"WPCONF_DISALLOW_FILE_MODS": "true",
+		"WPCONF_DISABLE_WP_CRON": "true"
+
+		// Per-site plugin configuration travels as WPCONF_* vars (secrets
+		// via `wrangler secret put`), e.g.:
+		// "WPCONF_S3_BUCKET": "site-slug-media",
+		// "WPCONF_S3_ENDPOINT": "https://<account>.r2.cloudflarestorage.com",
+		// "WPCONF_S3_PUBLIC_URL": "https://media.example.com",
+		// "WPCONF_CLOUDFLARE_EMAIL_ACCOUNT_ID": "<account>",
+		// "WPCONF_CLOUDFLARE_EMAIL_FROM": "noreply@example.com"
+	}
+
+	// Secrets (wrangler secret put): WORDPRESS_SALTS, CACHE_PURGE_SECRET,
+	// D1_PROXY_TOKEN, WPCONF_S3_KEY, WPCONF_S3_SECRET,
+	// WPCONF_CLOUDFLARE_EMAIL_API_TOKEN
+
+	// Custom domain: uncomment, set the hostname, update WORDPRESS_URL,
+	// and redeploy.
+	// "routes": [
+	// 	{ "pattern": "example.com", "custom_domain": true }
+	// ],
+}
