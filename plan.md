@@ -1,5 +1,19 @@
 # Project Moonshot — split-plane WordPress hosting
 
+> **Implementation status (2026-07-16)** — Phases 0–2 are implemented on branches:
+> `wordpress-nix@moonshot` (Phase 0: mkSiteImage/mkStaticAssets/mkSiteWorker, WPCONF/salts/no-download,
+> worker/ + 34 tests, reusable site-deploy workflow, templates.site, managed+d1 module modes),
+> `wordpress-cloudflare@master` (Phase 1: thinned to payload+identity+pins; dry-run green;
+> GUARD_ALLOW_WP_ADMIN=1 transition posture), `nixos-hosting-cloud@moonshot` (Phase 2 code:
+> cloudflared cluster-ingress module, generic clusterApps.ingress option, mk-wordpress-backend,
+> sites/ catalogue with pilot.nix.example; Traefik/Octavia removal + demo migration are
+> deliberate flip steps in the pilot checklist, not yet performed; node evals green).
+> Resolved VERIFYs: registry image ref accepted by wrangler deploy; nixpkgs services.cloudflared
+> option shape; gitium GITIGNORE/GIT_KEY_FILE/origin. Outstanding: `wrangler containers push`
+> command shape (first CI run), `wrangler d1 import` (first migration), cross-node routing
+> (when node2 lands), jwt-auth JWT-less passthrough (pilot). Phase 3 (pilot) is next: the
+> user-side checklist below, then merge the branches to main.
+
 ## Context
 
 Stateful, monolithic WordPress hosting is a security liability: every site exposes wp-admin, a writable filesystem, and a database to the public internet. This plan establishes a new paradigm on top of the D1/Cloudflare work just completed: **each site splits into a stateful control plane and a stateless public frontend**, connected only through git, D1, and R2.
