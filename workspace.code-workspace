@@ -26,6 +26,9 @@
 		},
 		{
 			"path": "../wordpress-jwt-auth"
+		},
+		{
+			"path": "../nixos-router"
 		}
 	],
 	"settings": {}

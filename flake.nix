@@ -126,6 +126,20 @@
           wordpress-d1-php84 = mkD1Image pkgs.php84 "wordpress-d1-php84";
           # The bundled site-agnostic edge Worker.
           worker = self.lib.mkSiteWorker { inherit pkgs; };
+          # Migration: replay a MySQL dump through the driver into SQLite.
+          mysql-to-sqlite = import ./lib/mysql-to-sqlite.nix {
+            inherit pkgs;
+            php = import ./lib/php.nix {
+              inherit pkgs;
+              php = pkgs.php83;
+              # A plain build: this runs once per migration on an operator's
+              # machine, so skip the slow clang/LTO pass. pdo_sqlite is not in
+              # the platform extension set (the runtime targets D1).
+              optimize = false;
+              extraExtensions = all: [ all.pdo_sqlite ];
+            };
+            d1DriverSrc = sqlite-database-integration;
+          };
           # The pinned sqlite-database-integration source, materializable in
           # CI (worker tests alias @wp-sqlite/d1-proxy-worker from it).
           sqlite-driver-src = pkgs.runCommandLocal "sqlite-driver-src" { } ''
@@ -144,11 +158,22 @@
           ];
         };
       }
-      // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-        # `nix build .#checks.<system>.module` runs the NixOS VM test (needs KVM).
-        checks.module = import ./tests/module.nix {
-          inherit pkgs;
-          wordpressModule = self.nixosModules.default;
+      // {
+        # NOTE: one `checks` attrset — `//` is shallow, so a second
+        # `// { checks.x = ...; }` would drop the earlier checks entirely.
+        checks = {
+          # Converter round-trip: data + MySQL type metadata fidelity.
+          mysql-to-sqlite = import ./tools/test/mysql-to-sqlite-test.nix {
+            inherit pkgs;
+            converter = self.packages.${system}.mysql-to-sqlite;
+          };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # `nix build .#checks.<system>.module` runs the NixOS VM test (needs KVM).
+          module = import ./tests/module.nix {
+            inherit pkgs;
+            wordpressModule = self.nixosModules.default;
+          };
         };
       }
     );
