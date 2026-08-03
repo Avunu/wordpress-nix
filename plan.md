@@ -93,7 +93,7 @@ With 0c in place the template carries **no scripts** — only payload, identity,
 1.  **`modules/cloudflared.nix` — tunnels REPLACE Traefik as cluster ingress** (decision: no local proxy layer at all; TLS at the edge, Access enforced before traffic reaches the origin, and the WAN firewall closes to SSH-only): **one cluster-wide tunnel (`cluster-ingress`), replicated on every node** — each node runs an identical `cloudflared` connector with the same tunnel ID + credentials (agenix `cloudflared-cluster`, encrypted to all node keys). The **ingress table is Nix-aggregated from every app's ingress declaration** (item 2), default 404 — no discovery layer needed because container IPs are statically declared and travel with the app to whatever node runs it. Cloudflare spreads requests across healthy connectors and sheds a node's on failure — **multi-node = add a replica; app moves between nodes need zero Cloudflare changes** (cloudflared reaches container IPs on the local br-app or cross-node via the overlay's app-VLAN routes; an off-home-node hop over the vRack is negligible). DNS: wildcard CNAME `*.avunu.io → <tunnel-id>.cfargotunnel.com` for admin/platform hostnames + per-zone CNAMEs for public workload domains (Access apps stay per-hostname for per-site policy/aud). Trade-offs accepted: one shared tunnel credential (Access authenticates at the edge *before* the tunnel for gated hostnames, jwt-auth validates in-app; document rotation); Cloudflare becomes the sole ingress path (public frontends already are Cloudflare-or-nothing; keep Octavia re-enablement as documented break-glass); one hostname → one origin URL (the day a service needs N replicas behind one hostname, reintroduce a thin proxy for that service or use CF Load Balancer); Cloudflare proxy semantics apply to all migrated workloads (~100 MB bodies, ~100 s requests). **Fallback if cross-node routing disappoints**: per-node tunnels with per-app CNAME pinning (DNS update on app moves — automatable in bootstrap). Monitor cloudflared via its Prometheus metrics endpoint (scrape from the existing Prometheus).
 2.  **Generic per-app ingress option, superseding Traefik `service.tags`** (`modules/app-container.nix` + `lib/mk-app-container.nix`): new `clusterApps.<name>.ingress = { "<hostname>" = { port = 80; path = "/"; }; }` (or hostname → URL shorthand). `modules/cloudflared.nix` aggregates all apps' declarations into the connector config; Nomad service registration stays for lifecycle/observability but `traefik.*` tags are removed from the schema. WordPress backends (item 5) and every other workload declare ingress the same way — this is the orchestration project's ingress API from now on.
 3.  **Migrate existing workloads, then remove Traefik + Octavia**: convert `demo` (and `littlecocalico` when it lands) to `ingress` declarations as public (non-Access) tunnel hostnames — VERIFY their domains are zones on the CF account and check Frappe attachment sizes against the ~100 MB proxy body limit. Once each serves correctly through the tunnel: delete `modules/ingress.nix` (Traefik) from the module set, drop 80/443 from the WAN nftables allowlist in `modules/overlay-network.nix` (leaving SSH + ICMP), decommission the OVH Octavia LB (manual OVH step), and update `docs/ovh-provisioning-runbook.md` (§5 currently documents Octavia setup) to the tunnel-based flow.
-4.  **Zero Trust Access** (pilot = documented dashboard steps; bootstrap automates later via API): app for `<slug>.avunu.io` (staff allow, 24 h session; record the **aud tag**), Bypass app for `/gitium-webhook.php?key=…` (GitHub webhooks can't present Access creds; VERIFY jwt-auth proxy mode passes JWT-less requests through — fallback: skip the webhook, gitium reconciles on its next push). In-container: jwt-auth **proxy mode** — `JWT_AUTH_JWKS_URI=https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, `JWT_AUTH_AUD=<aud>`, cookie `CF_Authorization`, `JWT_AUTH_DEFAULT_ROLE=administrator` (staff-only policy for the pilot; switch to claim-mapped roles before client access), `JWT_AUTH_LOGOUT_URL=/cdn-cgi/access/logout`. Break-glass: wp-cli is exempt from the password-login block (`nixos-container run <slug> -- wp …`).
+4.  **Zero Trust Access** (pilot = documented dashboard steps; bootstrap automates later via API): app for `<slug>.avunu.io` (staff allow, 24 h session; record the **aud tag**), Bypass app for the **path** `/gitium-webhook.php` (GitHub webhooks can't present Access creds; gitium's own `?key=` remains the auth for that path — **Access application paths cannot match query strings**, so the bypass is path-scoped only, and a bypass is a *separate, more-specific Access application*, not a policy on the main app; VERIFY jwt-auth proxy mode passes JWT-less requests through — fallback: skip the webhook, gitium reconciles on its next push). In-container: jwt-auth **proxy mode** — `JWT_AUTH_JWKS_URI=https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, `JWT_AUTH_AUD=<aud>`, cookie `CF_Authorization`, `JWT_AUTH_DEFAULT_ROLE=administrator` (staff-only policy for the pilot; switch to claim-mapped roles before client access), `JWT_AUTH_LOGOUT_URL=/cdn-cgi/access/logout`. Break-glass: wp-cli is exempt from the password-login block (`nixos-container run <slug> -- wp …`).
 5.  **`lib/mk-wordpress-backend.nix` + `modules/sites.nix`** (readDir-imports `sites/<slug>.nix` param files — no more hand-editing workloads.nix): expands slug/domains/node/address/repoUrl/aud/R2/email params into the full `clusterApps.<slug>` entry — wordpress-nix module import (managed source + d1 database + saltsFile + configExtra with the JWT/S3/email/cache-purge defines), `juicefsPaths."/var/lib/wordpress" = "clients/<slug>/wordpress"`, **no mysql localState**, secrets list, and the generic `ingress = { "<slug>.avunu.io" = { port = 80; }; }` declaration from item 2 — WordPress backends are just another consumer of the cluster ingress API.
 6.  **Per-site agenix secrets** (via existing `secrets` gum TUI; frontend twins noted): `<slug>-wp-salts` (= Worker `WORDPRESS_SALTS`), `<slug>-d1-proxy-token` (= `D1_PROXY_TOKEN`), `<slug>-cache-purge-secret` (= `CACHE_PURGE_SECRET`), `<slug>-git-deploy-key` (ed25519; pub half = GitHub deploy key w/ write; wp-config `GIT_KEY_FILE` define — gitium honors it, verified), `<slug>-r2-media-key/-secret`, `<slug>-cf-email-token`, `<slug>-gitium-webhook-key`.
 7.  **Backend owns wp-cron** (`cron.enable = true`; frontend cron off; the wp-cron systemd timer gets the same PHP\_INI\_SCAN\_DIR + PATH as the web unit).
@@ -102,14 +102,179 @@ With 0c in place the template carries **no scripts** — only payload, identity,
 
 1.  Land Phases 0–2; bump orchestration's wordpress-nix input (same rev as the site repo's pin — add a CI same-rev check later).
 2.  `cloudflared tunnel create cluster-ingress` → agenix `cloudflared-cluster` (encrypt to all node keys); wildcard CNAME `*.avunu.io → <tunnel-id>.cfargotunnel.com`; migrate `demo` to a tunnel ingress declaration and confirm it serves, then remove Traefik/Octavia + close 80/443 (Phase 2 item 3) — the pilot runs on the Traefik-free cluster; `gh repo create Avunu/site-pilot --template Avunu/wordpress-site-template`; deploy key → GitHub + agenix.
-3.  `wrangler d1 create site-pilot`, `wrangler kv namespace create`, `wrangler r2 bucket create site-pilot-media`, R2 S3 keys (dashboard), Email Sending token; stamp wrangler.jsonc; `wrangler secret put` × (WORDPRESS\_SALTS, D1\_PROXY\_TOKEN, CACHE\_PURGE\_SECRET, WPCONF\_S3\_KEY/SECRET, WPCONF\_CLOUDFLARE\_EMAIL\_API\_TOKEN); GH secrets.
+3.  `wrangler d1 create site-pilot`, `wrangler kv namespace create`, `wrangler r2 bucket create site-pilot-media` (all covered by the existing wrangler OAuth login), per-site R2 S3 keys + Email Sending token via REST with the provisioning token; stamp wrangler.jsonc; `wrangler secret bulk` × (WORDPRESS\_SALTS, D1\_PROXY\_TOKEN, CACHE\_PURGE\_SECRET, WPCONF\_S3\_KEY/SECRET, WPCONF\_CLOUDFLARE\_EMAIL\_API\_TOKEN); GH secrets. (Phase 4's `moonshot` automates this whole step.)
 4.  Access app + webhook bypass (record aud) — hostname already resolves via the wildcard CNAME; write `sites/pilot.nix`; push; wait for pull-deploy.
 5.  **Deploy frontend first** (the `/__d1` route must exist), then `nixos-container run pilot -- wp core install --url=https://pilot.avunu.io …` — proves backend→D1 end-to-end. Seed gitium (`wp option update gitium_webhook_key`, GitHub webhook).
 6.  Smoke: Access login → wp-admin auto-provisioned admin; **install a test plugin → gitium commit+push → CI image build → frontend redeploy → cache purge** (the whole loop); media upload → R2 URL; wp\_mail; cron; guard matrix on the frontend (wp-admin 302 → backend, xmlrpc 403, wp-content php 404); `curl /__d1/v1/query` with/without token. Record admin page latency (see Risks).
 
-## Phase 4 — Bootstrap app + migration (extracted from the pilot)
+## Phase 4 — `moonshot`: site bootstrap + migration tooling
 
-`scripts/moonshot.sh` in the orchestration repo (devshell command `moonshot`, gum-based like the existing `secrets` TUI): `doctor` · `site new <slug>` (repo-from-template + deploy key, wrangler d1/kv/r2 create + wrangler.jsonc stamping, secret generation → agenix + `wrangler secret put` twins, `sites/<slug>.nix` render with next free br-app IP (no per-site tunnel DNS — the wildcard CNAME covers admin hostnames), Access apps via API or interactive checklist, first-boot seed via `nixos-container run` wp-cli) · `site migrate <slug>` (adds: legacy wp-content rsync → JuiceFS; DB: `wp search-replace` → mysqldump → local WP + SQLite driver to produce the driver's canonical SQLite schema → sanitized dump (no PRAGMA/BEGIN/sqlite\_sequence) → `wrangler d1 import` — VERIFY command + size limits; uploads: `wp wp-cloud-files migrate`) · `site list/status/destroy` · `rotate-salts` backlog. **Local dev**: `wrangler dev` with miniflare-local D1 is the story (seed via `wrangler d1 execute --local --file`); `remote:true` for cloud-D1 debugging (never bind prod D1 in dev); **no agenix for laptop dev** — wrangler OAuth + `.dev.vars`; agenix stays a cluster-plane concern.
+The per-site Cloudflare/GitHub/DNS choreography is the most arduous part of adopting this
+paradigm, so it gets a real tool: **`moonshot`**, a gum-based TUI shipped as a Nix app in the
+orchestration repo (`nix run .#moonshot`, plus a devShell command, following the existing
+`secrets` TUI precedent). Nix packaging is not optional here — the workflow needs `gum`,
+`sqlite3`, `mysql`, `wp`, `rclone`, `wrangler`, `gh`, `cloudflared`, `jq`, `ssh`, and a
+driver-enabled PHP, several of which are absent from a stock dev machine. PHP-side work is a
+separate wordpress-nix app (`nix run github:Avunu/wordpress#mysql-to-sqlite`) so the tool stays
+a thin orchestrator.
+
+### Verified capability matrix (probed 2026-08-03 against live Cloudflare)
+
+| Capability | How | Verified |
+| --- | --- | --- |
+| D1 create/query, KV create, R2 **bucket** create, Workers deploy, containers push, `secret bulk` | **wrangler, existing OAuth login** — no token needed | ✅ REST + `r2 bucket list` succeeded on the OAuth token |
+| Custom domain → **DNS record + TLS cert created automatically** by `wrangler deploy` | wrangler | ✅ documented; fails if a record already exists at that hostname (always true for a migration → must delete first) |
+| Zero Trust Access apps/policies | **REST only** (`/accounts/{id}/access/apps`) | ✅ wrangler OAuth **rejected** ("Authentication error"); no `wrangler access` command exists |
+| DNS record create/delete (cutover, wildcard tunnel CNAME) | **REST only** | ✅ wrangler OAuth **rejected** |
+| R2 S3 access keys | **REST** `POST /accounts/{id}/tokens`; **secret = SHA-256 of the token value** | ✅ wrangler OAuth **rejected** on `/user/tokens/permission_groups` |
+| Bulk media upload | **`rclone copy`** to the S3 endpoint | wrangler is one-object-only (315 MB cap); Super Slurper is **cloud-source-only** (no local dir) — has a REST API but doesn't fit a legacy-host migration |
+| SQL import | **`wrangler d1 execute --remote --file`** (staged upload + polling, **5 GB** limit) | ⚠️ **`wrangler d1 import` does not exist** — corrects the earlier plan |
+
+**"OAuth for all" verdict**: it is Cloudflare acting as an OAuth *provider* (self-managed clients,
+Authorization Code + PKCE, public/CLI clients supported), and it *can* mint user-scoped tokens
+carrying `access:write`/`dns_records:edit`. But `wrangler login`'s own 29-scope catalogue omits
+Access, DNS, and token-minting, and registering a custom client itself requires a token or the
+dashboard — so **OAuth does not remove the bootstrap, it only improves credential hygiene**.
+Decision: **one provisioning API token** (below). Revisit OAuth if we ever provision into
+*client-owned* Cloudflare accounts, where delegated consent is the only sane model.
+
+### Credential model
+
+- **wrangler's existing OAuth login** does ~85% of the work, unchanged and unmanaged by us.
+- **One provisioning API token** in agenix as `cloudflare-provision-token`, used *only* by
+  `moonshot` for the three gaps: Access apps, DNS records, and per-site R2 key minting.
+  Scopes: `Access: Apps and Policies Write`, `DNS Write` (zone), `API Tokens Write`,
+  `Account Settings Read`, `Zone Read`.
+  ⚠️ **`API Tokens Write` is privilege-escalating** (a token that mints tokens) — the accepted
+  cost of per-site R2 credential isolation. Mitigations: scope the token to the specific
+  accounts we host, keep it out of CI (operator workstation + agenix only), and rotate on
+  operator change. `moonshot doctor` verifies scope coverage by probing each endpoint.
+- **Per-site R2 keys**: `POST /accounts/{id}/tokens` with a bucket-scoped
+  `Workers R2 Storage Bucket Item Write` policy (resolve permission-group IDs at runtime via
+  `/user/tokens/permission_groups`, never hardcode). Access Key ID = token `id`;
+  **Secret Access Key = SHA-256 of the token `value`**. A leaked site key exposes one bucket.
+- **Multi-account is a first-class requirement**: the operator has 5 Cloudflare accounts
+  (client-owned brands). Every site carries its `accountId`; `moonshot` sets
+  `CLOUDFLARE_ACCOUNT_ID` per invocation and never relies on a default.
+
+### Site configuration as JSON (adopting the nixos-router pattern)
+
+Replace the `sites/<slug>.nix` parameter files from Phase 2 with **`sites/<slug>.json`**, read by
+`modules/sites.nix` via `builtins.fromJSON` and applied with **`lib.mkDefault`** — exactly the
+`nixos-router/local/router-settings.json` pattern. An optional `sites/<slug>.nix` overlay stays
+available for locked or non-serializable settings (extra modules, packages), and anything set
+there wins over the JSON. Rationale: the tool reads and writes site config with `jq` instead of
+generating Nix, config is diffable/inspectable by any tooling, and a future web UI can edit the
+same file — while Nix remains the thing that *deploys* it.
+
+Two files per site, one in each plane, both written from the tool's single in-memory answer set
+(no generated-file indirection): **`wrangler.jsonc`** in the site repo (frontend identity: worker
+name, D1/KV IDs, URLs, `WPCONF_*`) and **`sites/<slug>.json`** in the orchestration repo (backend
+params: node, address, adminHost, accessAud, R2/email config). Overlap is deliberately small
+(slug, hostnames, accountId).
+
+### The database path (highest-fidelity conversion)
+
+The driver *is* the MySQL→SQLite translator, so the conversion runs **through the driver** rather
+than through a generic converter — every statement passes the same translation layer that will
+serve the site at runtime:
+
+1. On the source host: `wp db export` (or `mysqldump --single-transaction --no-tablespaces`),
+   after a `wp search-replace` dry-run report of URL changes.
+2. `nix run github:Avunu/wordpress#mysql-to-sqlite -- dump.sql out.sqlite` — a PHP CLI harness
+   that boots `WP_MySQL_On_SQLite` against a fresh local SQLite file and replays the dump
+   statement-by-statement, splitting statements with the project's own **MySQL parser** (safe
+   across quoted strings and delimiters). Result: canonical schema *and* populated
+   `information_schema` shadow tables, with exact type fidelity for plugin tables too.
+   Safety net: the driver already ships
+   `WP_SQLite_Information_Schema_Reconstructor::ensure_correct_information_schema()`, which the
+   configurator calls automatically on first connect and which rebuilds metadata from whatever
+   tables physically exist (authoritative for core tables via `wp_get_db_schema()`, inferred for
+   plugin tables) — so a partial conversion self-heals rather than bricking the site.
+3. `sqlite3 out.sqlite .dump` → **strip `BEGIN TRANSACTION`/`COMMIT`**, drop any `_cf_*`/`sqlite_sequence`
+   noise, prepend `PRAGMA defer_foreign_keys = true;` → `wrangler d1 execute <db> --remote --file`.
+4. Preflight gates before touching D1: **10 GB** database ceiling, **5 GB** file-import ceiling,
+   **100 KB** per-statement ceiling (split or fail loudly), and a `d1 time-travel info` bookmark
+   captured first — the free rollback for the load step.
+
+### The media path
+
+`rclone copy` from the source host's `wp-content/uploads` straight to the R2 bucket over the S3
+endpoint (`https://<account>.r2.cloudflarestorage.com`), using the freshly minted per-site key.
+Handles tens of GB of small files with resume and `--checksum` re-runs. The tool then verifies a
+sample of objects over the public URL before rewriting any URLs. Super Slurper is only wired in
+if the source media already lives in S3/GCS/Spaces (its REST API is documented in the research if
+that case arises).
+
+### Command surface
+
+```
+moonshot doctor                    # tool + auth + token-scope probes (each gap endpoint)
+moonshot site new <slug>           # greenfield site, all planes
+moonshot site migrate <slug>       # the full pipeline below (resumable)
+moonshot site cutover <slug>       # DNS flip — deliberate, separate, reversible
+moonshot site status|list|destroy <slug>
+moonshot secrets                   # existing agenix TUI (unchanged)
+```
+
+Every run is a **resumable state machine**: answers and step results live in
+`.moonshot/<slug>.state.json`, each step is idempotent and re-runnable, and a failed step resumes
+in place rather than restarting the migration. Long steps (rclone, D1 load) stream progress
+through gum.
+
+### `site migrate` — step order
+
+1. **Preflight** — `doctor` checks; gum interview (slug, source SSH target, domains, target
+   Cloudflare account from the 5, node, backend hostname); write state file.
+2. **Survey the source over SSH** — locate the WP root, read `wp-config.php` for DB credentials,
+   `wp core version`, `wp plugin list`, uploads size, and a `wp search-replace --dry-run` URL
+   report. Print a go/no-go summary (D1 ceiling, upload volume, PHP version, oddities like
+   multisite or must-use plugins).
+3. **Pull code** — rsync `wp-content` (themes/plugins/mu-plugins/languages, **excluding
+   uploads/cache/upgrade**) into a scratch tree.
+4. **Assemble the site repo** — `nix flake init -t github:Avunu/wordpress#site`, drop in the
+   pulled `wp-content`, add the companion plugins (gitium, wp-cloud-files,
+   wordpress-cloudflare-email, wordpress-jwt-auth) at pinned releases, stamp `wrangler.jsonc`,
+   `gh repo create` + push, generate the ed25519 deploy key → GitHub deploy key + agenix.
+5. **Provision Cloudflare** (wrangler, per-account) — D1 database, KV namespace, R2 bucket;
+   mint the per-site R2 token (REST); generate salts / D1 proxy token / cache purge secret /
+   gitium webhook key once and write **both** twins: `wrangler secret bulk` (stdin JSON) for the
+   Worker and agenix for the backend.
+6. **Migrate the database** — the four-step path above.
+7. **Migrate media** — rclone to R2; verify samples.
+8. **Deploy the frontend** — GitHub Actions runs the reusable pipeline (or a local
+   `nix build`+`wrangler deploy` for the first run), on the **staging hostname**; the `/__d1`
+   route must exist before the backend can boot.
+9. **Provision the backend** — write `sites/<slug>.json`, create the Access application (+ the
+   separate path-scoped **bypass app** for `/gitium-webhook.php`; note Access paths **do not
+   support query strings**, so bypass `/wp-json/` style paths, never `?rest_route=`), record the
+   `aud` tag into the JSON, commit and push the orchestration repo, wait for pull-deploy, then
+   seed gitium options over `nixos-container run`.
+10. **Verify** — automated smoke: staging homepage 200 + `CF-Cache-Status` MISS→HIT, admin login
+    through Access, a media URL resolving from R2, `/__d1` authenticated round trip, guard matrix
+    (wp-admin 302, xmlrpc 403, wp-content PHP 404), and a wp-cli row-count diff between source
+    MySQL and D1 per table. Print the report; **stop here**.
+
+### Cutover (separate command, reversible)
+
+`moonshot site cutover <slug>` is the only step that touches live traffic: lower the source
+domain's DNS TTL beforehand, re-run the delta sync (rclone `--checksum` + an incremental DB
+re-load from a fresh dump, since the source stayed live), delete the pre-existing DNS record
+(required — `custom_domain` refuses an existing CNAME), add the custom-domain route,
+`wrangler deploy`, flip `WORDPRESS_URL`/`WP_HOME`, run `wp search-replace` on D1, purge the edge
+cache, and re-run the smoke suite against the real domain. **Rollback** = re-point DNS at the
+untouched source host; the old site is never modified or decommissioned by the tool.
+
+### Work items
+
+- **wordpress-nix**: `packages.mysql-to-sqlite` (PHP CLI harness + driver + parser, exposed as a
+  flake app); extend the site template with a `site.json`-shaped answer file if useful.
+- **nixos-hosting-cloud**: `packages.moonshot` + `apps.moonshot` (bash + gum, all deps pinned);
+  convert `modules/sites.nix` to `fromJSON` + `mkDefault` with the optional `.nix` overlay;
+  `sites/pilot.json.example`; agenix `cloudflare-provision-token`; extract the shared agenix
+  helpers out of `scripts/secrets.sh` for reuse.
+- **Docs**: a one-time setup runbook (provisioning token scopes, the 5 accounts, wildcard CNAME)
+  and a per-site migration runbook generated by `moonshot doctor`.
 
 ## Risks & mitigations (accepted posture)
 
@@ -123,7 +288,9 @@ With 0c in place the template carries **no scripts** — only payload, identity,
 
 ## Consolidated VERIFY list (resolve during implementation)
 
-`wrangler containers push` exact semantics + registry ref format in `containers[].image` · `wrangler d1 import` command/limits · nixpkgs `services.cloudflared` option shape · **cross-node admin routing that gates the replicated-tunnel topology: any node's cloudflared → any node's container IP over br-app/the app-VLAN routes** (fallback: per-node tunnels + per-site CNAME pinning, or a thin per-node proxy) · jwt-auth proxy-mode behavior on JWT-less requests (webhook bypass path) · gitium leaving a pre-seeded `.gitignore` intact · native extensions under the NixOS FrankenPHP unit (ZTS — expected fine, proven in the container) · R2 S3 key minting via API · avunu.io + every migrated workload domain (demo, littlecocalico) present as CF zones · image-size headroom vs Cloudflare's compressed limit (add a CI guard ~1.5 GB).
+`wrangler containers push` exact semantics + registry ref format in `containers[].image` (host is `registry.cloudflare.com`; path structure unconfirmed) · **cross-node admin routing that gates the replicated-tunnel topology: any node's cloudflared → any node's container IP over br-app/the app-VLAN routes** (fallback: per-node tunnels + per-site CNAME pinning, or a thin per-node proxy) · jwt-auth proxy-mode behavior on JWT-less requests (webhook bypass path) · gitium leaving a pre-seeded `.gitignore` intact · native extensions under the NixOS FrankenPHP unit (ZTS — expected fine, proven in the container) · avunu.io + every migrated workload domain (demo, littlecocalico) present as CF zones · image-size headroom vs Cloudflare's compressed limit (add a CI guard ~1.5 GB) · the R2 bucket-item permission-group ID (resolve at runtime via `/user/tokens/permission_groups`, never hardcode) · Cloudflare Email Service **sending-domain onboarding appears dashboard-only** (no REST/wrangler path found) — treat as a manual per-domain step.
+
+**Resolved by the 2026-08-03 capability probe** (see Phase 4): `wrangler d1 import` does not exist (use `d1 execute --remote --file`, 5 GB) · registry image refs are accepted in `containers[].image` · nixpkgs `services.cloudflared` option shape · wrangler OAuth covers D1/R2-buckets/KV/Workers/containers/secrets but **not** Access, DNS, or token minting · custom-domain routes create DNS + cert automatically but refuse a pre-existing record · `cloudflared tunnel route dns` should not be used for wildcards (create the CNAME via the DNS API) · Access application paths cannot match query strings.
 
 ## Verification (per phase)
 
