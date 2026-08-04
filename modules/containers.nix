@@ -9,27 +9,46 @@
   pkgs,
   php,
   imageName,
+  tag ? "latest",
   # Source of the SQLite Database Integration project (with the D1 backend).
   # When set, the image bundles the plugin, the D1 db.php drop-in, and the
   # native wp_mysql_parser + wp_d1_client extensions.
   d1DriverSrc ? null,
   # Package set providing the Rust toolchain for the native extensions.
   rustPkgs ? pkgs,
-  # WordPress core is baked into the image (at /usr/src/wordpress) so cold
-  # starts don't re-download it, and so the exact static-asset set is known
-  # (the Cloudflare Worker serves those files from Worker Assets — keep this
-  # version in sync with wordpress-cloudflare's WORDPRESS_VERSION).
-  wordpressVersion ? "7.0.1",
-  wordpressHash ? "sha256-vkzmfQpcj/qYT26PXi+V2ji/F5tKJhk0zZJ9QkHwQoY=",
+  # WordPress core is baked into the image (at /usr/src/wordpress) so the
+  # image needs no runtime downloads, and so the exact static-asset set is
+  # known (lib/static-assets.nix builds the Worker-Assets tree from the same
+  # pin). Defaults live in lib/wordpress-core.nix.
+  wordpressVersion ? null,
+  wordpressHash ? null,
+  # The site's wp-content tree (typically a site repo's ./wp-content),
+  # grafted over the baked core's wp-content — the per-site image payload.
+  wpContent ? null,
+  # Extra nix-pinned plugins/themes grafted on top (name -> store path),
+  # for site code deliberately kept out of git (e.g. hash-fetched premium
+  # plugins). Day-to-day site code belongs in wpContent.
+  plugins ? { },
+  themes ? { },
 }:
 let
   phpBuild = import ../lib/php.nix { inherit pkgs php; };
 
-  # WordPress core, extracted (fetchzip strips the leading "wordpress/" dir).
-  wordpressCore = pkgs.fetchzip {
-    url = "https://wordpress.org/wordpress-${wordpressVersion}.zip";
+  wordpressCore = import ../lib/wordpress-core.nix {
+    inherit pkgs;
+    version = wordpressVersion;
     hash = wordpressHash;
   };
+
+  # Graft name -> store-path sets into the baked wp-content.
+  graftInto =
+    dir: set:
+    pkgs.lib.concatStringsSep "\n" (
+      pkgs.lib.mapAttrsToList (name: src: ''
+        mkdir -p usr/src/wordpress/wp-content/${dir}
+        cp -rL ${src} usr/src/wordpress/wp-content/${dir}/${name}
+      '') set
+    );
 
   phpExtensions =
     if d1DriverSrc == null then
@@ -63,7 +82,7 @@ let
 in
 pkgs.dockerTools.buildLayeredImage {
   name = imageName;
-  tag = "latest";
+  inherit tag;
   contents = [
     phpBuild
     pkgs.busybox
@@ -111,6 +130,15 @@ pkgs.dockerTools.buildLayeredImage {
     mkdir -p usr/src
     cp -r ${wordpressCore} usr/src/wordpress
     chmod -R u+w usr/src/wordpress
+${
+  pkgs.lib.optionalString (wpContent != null) ''
+    # Graft the site's wp-content over the baked core's (merge; site wins).
+    cp -rL ${wpContent}/. usr/src/wordpress/wp-content/
+    chmod -R u+w usr/src/wordpress/wp-content
+''
+}
+${graftInto "plugins" plugins}
+${graftInto "themes" themes}
 
     # The APCu persistent object cache drop-in. The entrypoint installs it
     # as wp-content/object-cache.php unless WORDPRESS_OBJECT_CACHE=none.

@@ -1,0 +1,19 @@
+# Thin caller: the actual pipeline lives in the platform repo and updates
+# centrally. Pin to a tag instead of @main for controlled rollout.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit to (re)deploy — rollback entry point.
+        required: false
+
+jobs:
+  deploy:
+    uses: Avunu/wordpress/.github/workflows/site-deploy.yml@main
+    with:
+      ref: ${{ inputs.ref || github.sha }}
+    secrets: inherit

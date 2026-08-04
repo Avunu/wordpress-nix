@@ -1,0 +1,40 @@
+# --- Platform (build artifacts and generated files) ---
+/public
+/.worker
+/.wrangler/
+/.dev.vars
+/result
+/result-*
+/.direnv/
+node_modules/
+
+# Platform-injected files: never committed, refreshed by the platform.
+wp-content/mu-plugins/platform-*.php
+wp-content/db.php
+wp-content/object-cache.php
+wp-content/advanced-cache.php
+
+# --- WordPress core (symlinked/baked; the platform pin owns it) ---
+/wp-admin/
+/wp-includes/
+/index.php
+/wp-*.php
+/xmlrpc.php
+/license.txt
+/readme.html
+wp-config.php
+
+# --- Volatile site state (gitium also ignores these) ---
+wp-content/uploads/
+wp-content/upgrade/
+wp-content/cache/
+wp-content/backup-db/
+wp-content/backups/
+wp-content/blogs.dir/
+*.log
+*.sql
+*.sql.gz
+.htaccess
+.maintenance
+sitemap.xml
+sitemap.xml.gz

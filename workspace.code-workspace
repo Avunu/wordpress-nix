@@ -1,0 +1,35 @@
+{
+	"folders": [
+		{
+			"path": "../WordPress"
+		},
+		{
+			"path": "../sqlite-database-integration"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../wp-cloud-files"
+		},
+		{
+			"path": "../wordpress-cloudflare"
+		},
+		{
+			"path": "../nixos-container-orchestration"
+		},
+		{
+			"path": "../gitium"
+		},
+		{
+			"path": "../wordpress-cloudflare-email"
+		},
+		{
+			"path": "../wordpress-jwt-auth"
+		},
+		{
+			"path": "../nixos-router"
+		}
+	],
+	"settings": {}
+}
