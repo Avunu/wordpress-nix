@@ -43,7 +43,7 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
 
       - uses: DeterminateSystems/nix-installer-action@v16
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Build image, static assets, and worker bundle
         run: |
