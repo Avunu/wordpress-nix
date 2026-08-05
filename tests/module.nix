@@ -11,6 +11,11 @@
   pkgs,
   wordpressModule,
 }:
+let
+  # nixpkgs packages themes separately from core, so state mode has to seed one.
+  themeName = "twentytwentyfive";
+  theme = pkgs.wordpressPackages.themes.${themeName};
+in
 pkgs.testers.runNixOSTest {
   name = "wordpress-nix";
 
@@ -48,7 +53,11 @@ pkgs.testers.runNixOSTest {
           source.type = "state";
           database.createLocally = true;
         };
-        # Seed core offline (stand-in for `wp core download`).
+        # Seed core offline (stand-in for `wp core download`), plus a theme.
+        # pkgs.wordpress ships wp-content/themes containing only index.php —
+        # nixpkgs packages themes separately — and an installed site with no
+        # theme renders a 200 with a completely empty body, which is what the
+        # end-to-end assertion below would otherwise trip over.
         systemd.services.seed-wordpress = {
           before = [ "wordpress-init.service" ];
           requiredBy = [ "wordpress-init.service" ];
@@ -59,8 +68,14 @@ pkgs.testers.runNixOSTest {
               mkdir -p "$dst"
               cp -r ${pkgs.wordpress}/share/wordpress/. "$dst/"
               chmod -R u+w "$dst"
-              chown -R wordpress:wordpress "$dst"
             fi
+            dest="$dst/wp-content/themes/${themeName}"
+            if [ ! -e "$dest/style.css" ]; then
+              mkdir -p "$dest"
+              cp -r ${theme}/. "$dest/"
+              chmod -R u+w "$dest"
+            fi
+            chown -R wordpress:wordpress "$dst"
           '';
         };
       };
@@ -106,7 +121,11 @@ pkgs.testers.runNixOSTest {
         # cron timer is armed
         machine.succeed("systemctl is-active wordpress-cron.timer")
         # core is served: an uninstalled site redirects to the installer
-        machine.succeed("curl -sSL http://localhost/ | grep -qi 'wordpress'")
+        # Fetch to a file rather than piping: grep -q exits on the first match,
+        # which SIGPIPEs curl, and pipefail then surfaces curl's exit 23. That
+        # only bites once the body is large enough to still be streaming.
+        machine.succeed("curl -sSL http://localhost/ -o /tmp/home.html")
+        machine.succeed("grep -qi wordpress /tmp/home.html")
 
     # git mode: core files are symlinks into the read-only store
     git.succeed("readlink /var/lib/wordpress/www/index.php | grep -q /nix/store")
@@ -118,7 +137,11 @@ pkgs.testers.runNixOSTest {
         "--admin_user=admin --admin_password=admin_pw_123 "
         "--admin_email=admin@example.com --skip-email'"
     )
-    state.succeed("curl -sS http://localhost/ | grep -q StateSite")
+    # A themeless install returns 200 with an empty body, so assert the body is
+    # actually rendered, not just that the request succeeded.
+    state.succeed("curl -sS http://localhost/ -o /tmp/installed.html")
+    state.succeed("grep -q StateSite /tmp/installed.html")
+    state.succeed("grep -q '</html>' /tmp/installed.html")
 
     # ---- socket mode ----
     socket.wait_for_unit("wordpress-init.service")
@@ -129,8 +152,9 @@ pkgs.testers.runNixOSTest {
     socket.succeed("stat -c '%a' /run/wordpress/wp.sock | grep -x 660")
     # the site serves over the socket...
     socket.succeed(
-        "curl -sS --unix-socket /run/wordpress/wp.sock http://localhost/ | grep -qi 'wordpress'"
+        "curl -sSL --unix-socket /run/wordpress/wp.sock http://localhost/ -o /tmp/sock.html"
     )
+    socket.succeed("grep -qi wordpress /tmp/sock.html")
     # ...and nothing at all listens on the network
     socket.fail("curl -sS --max-time 5 http://localhost/")
     socket.fail("ss -HltnO | grep -qE ':(80|443)\\s'")
@@ -145,7 +169,7 @@ pkgs.testers.runNixOSTest {
     socket.succeed("systemctl start wordpress.service")
     socket.wait_for_file("/run/wordpress/wp.sock")
     socket.succeed(
-        "curl -sS --unix-socket /run/wordpress/wp.sock http://localhost/ | grep -qi 'wordpress'"
+        "curl -sSL --unix-socket /run/wordpress/wp.sock http://localhost/ -o /tmp/sock.html"
     )
   '';
 }
