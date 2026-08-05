@@ -38,7 +38,7 @@ jobs:
       group: site-deploy-${{ github.repository }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
 
