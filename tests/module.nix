@@ -26,7 +26,9 @@ pkgs.testers.runNixOSTest {
           phpOptimize = false; # skip the slow clang/LTO build in CI
           source = {
             type = "git";
-            path = pkgs.wordpress;
+            # pkgs.wordpress installs to $out/share/wordpress, so the document
+            # root is that subdirectory — $out itself contains only `share`.
+            path = "${pkgs.wordpress}/share/wordpress";
           };
           database.createLocally = true;
         };
@@ -54,7 +56,7 @@ pkgs.testers.runNixOSTest {
             dst=/var/lib/wordpress/www
             if [ ! -e "$dst/wp-includes/version.php" ]; then
               mkdir -p "$dst"
-              cp -r ${pkgs.wordpress}/. "$dst/"
+              cp -r ${pkgs.wordpress}/share/wordpress/. "$dst/"
               chmod -R u+w "$dst"
               chown -R wordpress:wordpress "$dst"
             fi
