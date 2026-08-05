@@ -1,6 +1,10 @@
 # NixOS module: deploy a single WordPress instance served by FrankenPHP
 # (standalone — Caddy terminates TLS itself via ACME; no nginx in front).
 #
+# Set `socketPath` instead of `domain` to serve over a unix socket with no TCP
+# listener at all, for a co-located reverse proxy or tunnel connector that
+# terminates TLS elsewhere.
+#
 # Three source modes:
 #   * state   — WordPress core lives in a writable ${stateDir}/www, downloaded on
 #               first boot with wp-cli; fully mutable (admin manages core / plugins
@@ -139,7 +143,37 @@ let
   dbHost =
     if dbLocal then "localhost:${cfg.database.socket}" else "${cfg.database.host}:${toString cfg.database.port}";
 
-  siteAddress = if cfg.domain != "" then cfg.domain else ":80";
+  # Socket mode: Caddy binds a unix socket instead of a TCP port, so nothing in
+  # the container listens on the network at all. Caddy's default socket mode is
+  # 0200 (u=w), which a separate connector process could not open — hence the
+  # explicit permission suffix.
+  viaSocket = cfg.socketPath != "";
+  socketDir = builtins.dirOf cfg.socketPath;
+
+  # Normalized so identical paths collapse under lib.unique.
+  mkRuntimeDir = path: "d ${path} 0750 ${cfg.user} ${cfg.group} -";
+
+  # A unix socket is NOT valid as a site address — Caddy parses `unix/...` as the
+  # host `unix` plus a path, then binds TCP :80 anyway. It belongs in the `bind`
+  # directive inside the site block instead, with the site address kept as `:80`
+  # so no scheme is inferred and automatic HTTPS stays off.
+  siteAddress = if cfg.domain != "" && !viaSocket then cfg.domain else ":80";
+
+  # Caddy's default unix socket mode is 0200 (u=w only), which no peer process
+  # could open, so the mode is always stated explicitly.
+  bindDirective = optionalString viaSocket "bind unix/${cfg.socketPath}|${cfg.socketMode}";
+
+  # A unix socket has no peer address, so REMOTE_ADDR is meaningless and Caddy's
+  # trusted_proxies (which parses an IP) cannot vouch for X-Forwarded-For. Take
+  # the client IP from Cloudflare's header instead: the socket is unreachable
+  # except through the connector in this same container, and Cloudflare strips
+  # client-supplied CF-Connecting-IP at the edge, so it is trustworthy here.
+  socketRemoteAddr = optionalString viaSocket ''
+    // Socket mode: recover the real client IP from Cloudflare's header.
+    if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+        $_SERVER['REMOTE_ADDR'] = $_SERVER['HTTP_CF_CONNECTING_IP'];
+    }
+  '';
 
   caddyfile = pkgs.writeText "Caddyfile" ''
     {
@@ -165,6 +199,8 @@ let
     }
 
     ${siteAddress} {
+      ${bindDirective}
+
       @static {
         file
         path *.css *.eot *.gif *.ico *.jpeg *.jpg *.js *.otf *.png *.svg *.ttf *.webp *.woff *.woff2
@@ -181,6 +217,7 @@ let
     <?php
     // Managed by services.wordpress-nix — regenerated on activation; do not edit.
 
+    ${socketRemoteAddr}
     ${optionalString managed ''
       // Managed mode: core lives in the (read-only) store; content is mutable.
       define('WP_CONTENT_DIR', '${docroot}/wp-content');
@@ -467,6 +504,37 @@ in
       description = "ACME account email (required when domain is set).";
     };
 
+    socketPath = mkOption {
+      type = types.str;
+      default = "";
+      example = "/run/wordpress/wp.sock";
+      description = ''
+        Serve over this unix socket instead of a TCP port. Set → Caddy binds
+        only the socket (no :80, no :443, no ACME) and nothing listens on the
+        network; empty → the `domain`/`:80` behaviour above.
+
+        Must live in its own directory, which this module creates 0750 owned by
+        `user` — Caddy runs as that user and could not create a socket directly
+        in root-owned /run.
+
+        Intended for a co-located reverse proxy or tunnel connector, which must
+        be able to open the socket — see `socketMode`. In this mode the client
+        IP is taken from `CF-Connecting-IP`, since a unix socket has no peer
+        address.
+      '';
+    };
+
+    socketMode = mkOption {
+      type = types.str;
+      default = "0660";
+      example = "0666";
+      description = ''
+        Permission mode for `socketPath`. Caddy's own default is 0200 (u=w),
+        which no other process could open, so this is set explicitly. 0660 pairs
+        with putting the peer process in this service's group.
+      '';
+    };
+
     openFirewall = mkOption {
       type = types.bool;
       default = true;
@@ -653,6 +721,20 @@ in
         message = "services.wordpress-nix: setting `domain` (enables ACME) requires `acmeEmail`.";
       }
       {
+        assertion = !viaSocket || cfg.domain == "";
+        message = "services.wordpress-nix: socketPath and domain are mutually exclusive — ACME cannot terminate TLS on a unix socket. Serve over the socket and let the proxy or tunnel in front handle TLS.";
+      }
+      {
+        # Caddy runs as cfg.user and has to create the socket, so its directory
+        # must be one this service owns. /run itself is 0755 root:root.
+        assertion =
+          !viaSocket || (lib.hasPrefix "/" cfg.socketPath && socketDir != "/run" && socketDir != "/");
+        message =
+          "services.wordpress-nix: socketPath must be an absolute path inside its own directory"
+          + " (e.g. /run/wordpress/wp.sock), not directly in /run — Caddy runs as"
+          + " ${cfg.user} and cannot create a socket in a root-owned directory.";
+      }
+      {
         assertion = !dbLocal || cfg.database.user == cfg.user;
         message = "services.wordpress-nix: local DB uses unix_socket auth, so database.user must equal user.";
       }
@@ -683,7 +765,7 @@ in
     };
     users.groups = mkIf (cfg.group == "wordpress") { wordpress = { }; };
 
-    systemd.tmpfiles.rules = [
+    systemd.tmpfiles.rules = lib.unique ([
       "d ${cfg.stateDir}                     0750 ${cfg.user} ${cfg.group} -"
       "d ${docroot}                          0750 ${cfg.user} ${cfg.group} -"
       "d ${cfg.stateDir}/caddy               0700 ${cfg.user} ${cfg.group} -"
@@ -694,9 +776,12 @@ in
       "d ${docroot}/wp-content/cache         0750 ${cfg.user} ${cfg.group} -"
       "d ${docroot}/wp-content/upgrade       0750 ${cfg.user} ${cfg.group} -"
     ]
-    ++ optional (
-      cfg.saltsFile != null
-    ) "d /run/wordpress                      0750 ${cfg.user} ${cfg.group} -";
+    # These two go through one formatter so lib.unique collapses them when the
+    # socket lives in /run/wordpress alongside the salts.
+    ++ optional (cfg.saltsFile != null) (mkRuntimeDir "/run/wordpress")
+    # Caddy creates the socket here and owns the directory, so 0750 is enough:
+    # a peer connector only needs traversal plus write on the 0660 socket.
+    ++ optional viaSocket (mkRuntimeDir socketDir));
 
     systemd.services.wordpress-init = {
       description = "Initialize WordPress runtime state";
@@ -754,10 +839,16 @@ in
         ExecStart = "${getExe frankenphp} run --config ${caddyfile} --adapter caddyfile";
         Restart = "always";
         RestartSec = "5";
-        # Bind :80/:443 without running as root.
-        AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
-        CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
-        ReadWritePaths = [ cfg.stateDir ];
+        # A crash with Restart=always can leave the socket file behind, which
+        # blocks the rebind. Clear it before every start.
+        ExecStartPre = optional viaSocket "${pkgs.coreutils}/bin/rm -f ${cfg.socketPath}";
+        # Bind :80/:443 without running as root. Socket mode binds no port, so it
+        # needs no capability at all.
+        AmbientCapabilities = optional (!viaSocket) "CAP_NET_BIND_SERVICE";
+        CapabilityBoundingSet = optional (!viaSocket) "CAP_NET_BIND_SERVICE";
+        # ProtectSystem=strict makes the whole hierarchy read-only, so the socket's
+        # directory has to be opened up for Caddy to create the socket in it.
+        ReadWritePaths = [ cfg.stateDir ] ++ optional viaSocket socketDir;
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;
@@ -817,7 +908,8 @@ in
       };
     };
 
-    networking.firewall = mkIf cfg.openFirewall {
+    # Socket mode binds no port, so there is nothing to open.
+    networking.firewall = mkIf (cfg.openFirewall && !viaSocket) {
       allowedTCPPorts = [ 80 ] ++ optional (cfg.domain != "") 443;
       allowedUDPPorts = optional (cfg.domain != "") 443;
     };

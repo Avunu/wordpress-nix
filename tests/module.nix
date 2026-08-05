@@ -3,9 +3,10 @@
 # Run: nix build .#checks.<system>.module   (needs KVM)
 #
 # Test VMs have no internet, so we exercise:
-#   * git mode   — source.path = pkgs.wordpress (a read-only store document root)
-#   * state mode — core seeded offline (production would `wp core download`)
-# Both use a local MariaDB over unix_socket (passwordless, OS-user matched).
+#   * git mode    — source.path = pkgs.wordpress (a read-only store document root)
+#   * state mode  — core seeded offline (production would `wp core download`)
+#   * socket mode — served over a unix socket with no TCP listener at all
+# All use a local MariaDB over unix_socket (passwordless, OS-user matched).
 {
   pkgs,
   wordpressModule,
@@ -63,6 +64,27 @@ pkgs.testers.runNixOSTest {
           '';
         };
       };
+
+    # ---- socket (unix socket origin, nothing on the network) ----
+    socket =
+      { ... }:
+      {
+        imports = [ wordpressModule ];
+        virtualisation.memorySize = 2048;
+        services.wordpress-nix = {
+          enable = true;
+          php = pkgs.php83;
+          phpOptimize = false;
+          source = {
+            type = "git";
+            # pkgs.wordpress installs to $out/share/wordpress, so the document
+            # root is that subdirectory — $out itself contains only `share`.
+            path = "${pkgs.wordpress}/share/wordpress";
+          };
+          database.createLocally = true;
+          socketPath = "/run/wordpress/wp.sock";
+        };
+      };
   };
 
   testScript = ''
@@ -97,5 +119,33 @@ pkgs.testers.runNixOSTest {
         "--admin_email=admin@example.com --skip-email'"
     )
     state.succeed("curl -sS http://localhost/ | grep -q StateSite")
+
+    # ---- socket mode ----
+    socket.wait_for_unit("wordpress-init.service")
+    socket.wait_for_unit("wordpress.service")
+    socket.wait_for_file("/run/wordpress/wp.sock")
+    # group-openable, so a co-located connector can reach it (Caddy's own
+    # default would be 0200 and unopenable)
+    socket.succeed("stat -c '%a' /run/wordpress/wp.sock | grep -x 660")
+    # the site serves over the socket...
+    socket.succeed(
+        "curl -sS --unix-socket /run/wordpress/wp.sock http://localhost/ | grep -qi 'wordpress'"
+    )
+    # ...and nothing at all listens on the network
+    socket.fail("curl -sS --max-time 5 http://localhost/")
+    socket.fail("ss -HltnO | grep -qE ':(80|443)\\s'")
+    # no port-binding capability is retained in socket mode
+    socket.fail(
+        "systemctl show -p AmbientCapabilities wordpress.service"
+        " | grep -qi cap_net_bind_service"
+    )
+    # a stale socket left by a crash does not block the rebind
+    socket.succeed("systemctl stop wordpress.service")
+    socket.succeed("touch /run/wordpress/wp.sock")
+    socket.succeed("systemctl start wordpress.service")
+    socket.wait_for_file("/run/wordpress/wp.sock")
+    socket.succeed(
+        "curl -sS --unix-socket /run/wordpress/wp.sock http://localhost/ | grep -qi 'wordpress'"
+    )
   '';
 }
