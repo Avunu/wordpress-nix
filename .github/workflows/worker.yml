@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Materialize the pinned sqlite-database-integration source
         run: nix build .#sqlite-driver-src -o .sqlite-src
