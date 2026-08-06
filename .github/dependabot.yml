@@ -1,11 +1,7 @@
 version: 2
 
-# Keeps every Dependabot-supported ecosystem in this repo up to date. PRs auto-merge
+# Keeps every ecosystem in this repo up to date, flake.lock included. PRs auto-merge
 # once the required checks go green — see .github/workflows/dependabot-auto-merge.yml.
-#
-# NOT covered here: flake.lock. Dependabot has no Nix ecosystem, and flake.lock is the
-# largest dependency surface in this repo (nixpkgs, flake-utils, the pinned D1 driver).
-# It is updated on its own schedule by .github/workflows/update-flake-lock.yml.
 updates:
   # GitHub Actions used by the workflows in .github/workflows.
   #
@@ -33,4 +29,24 @@ updates:
       prefix: chore
     groups:
       npm:
+        patterns: ["*"]
+
+  # Nix flake inputs — nixpkgs, flake-utils, nixpkgs-rust, and the pinned
+  # sqlite-database-integration D1 driver. Dependabot reads flake.lock directly
+  # (schema v7) and covers the `git+https` driver input as well as the `github:` ones.
+  #
+  # Weekly, not daily: nixpkgs and nixpkgs-rust both track nixos-unstable, which moves
+  # constantly — a daily bump would be pure churn. Grouped into one PR so the two
+  # nixpkgs pins advance together instead of drifting apart across separate merges.
+  #
+  # A lock bump touches flake.lock, which is in the `worker` workflow's path filter, so
+  # these PRs run the worker suite as well as the image build.
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      nix:
         patterns: ["*"]
