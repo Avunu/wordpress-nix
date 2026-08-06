@@ -29,7 +29,12 @@ jobs:
           docker load < "$image"
         done
 
+    # Publish only from `main`. On a pull_request the build above is the whole point —
+    # a PR must never overwrite the `latest`/`d1` tags, and Dependabot PRs run with a
+    # read-only GITHUB_TOKEN (no `packages: write`), so pushing there would fail the
+    # check and block auto-merge.
     - name: Log in to GitHub Container Registry
+      if: github.event_name == 'push'
       uses: docker/login-action@v4.6.0
       with:
         registry: ghcr.io
@@ -37,6 +42,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Push images to GitHub Container Registry
+      if: github.event_name == 'push'
       run: |
         IMAGE_ID=ghcr.io/${{ github.repository }}
         

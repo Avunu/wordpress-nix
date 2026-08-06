@@ -1,6 +1,36 @@
 version: 2
+
+# Keeps every Dependabot-supported ecosystem in this repo up to date. PRs auto-merge
+# once the required checks go green — see .github/workflows/dependabot-auto-merge.yml.
+#
+# NOT covered here: flake.lock. Dependabot has no Nix ecosystem, and flake.lock is the
+# largest dependency surface in this repo (nixpkgs, flake-utils, the pinned D1 driver).
+# It is updated on its own schedule by .github/workflows/update-flake-lock.yml.
 updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  # GitHub Actions used by the workflows in .github/workflows.
+  #
+  # Dependabot only scans the repo-root .github/workflows, so the site caller template
+  # in templates/site/.github/workflows/deploy.yml is *not* covered — it is scaffolding
+  # copied into site repos (which get their own Dependabot), and its only pin is the
+  # Avunu/wordpress reusable workflow ref. Bump that by hand when the pipeline moves.
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: "daily" # or weekly/monthly
+      interval: daily
+    commit-message:
+      prefix: chore
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # The platform edge Worker (worker/package.json + worker/package-lock.json).
+  # Bumps here trigger the `worker` workflow, which runs the vitest suite.
+  - package-ecosystem: npm
+    directory: /worker
+    schedule:
+      interval: daily
+    commit-message:
+      prefix: chore
+    groups:
+      npm:
+        patterns: ["*"]
