@@ -10,12 +10,11 @@ on:
       - "lib/worker.nix"
       - "flake.lock"
       - ".github/workflows/worker.yml"
+  # Deliberately unfiltered: `test` is a required status check on `main`, and a
+  # required check that never triggers sits pending forever rather than being
+  # skipped — which would wedge every PR that doesn't touch worker/**.
   pull_request:
-    paths:
-      - "worker/**"
-      - "lib/worker.nix"
-      - "flake.lock"
-      - ".github/workflows/worker.yml"
+    branches: [main]
 
 jobs:
   test:
