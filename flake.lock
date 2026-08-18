@@ -20,27 +20,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1786599213,
-        "narHash": "sha256-yNJd40f11EzXBjSByCB7IPpeFFAdeoSKKM67dGkfFoU=",
+        "lastModified": 1787001381,
+        "narHash": "sha256-Ue1Yo8gfHdD4TMtNewhA4tkSYeFqXThju0nCyJc3ALo=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "0e251e24a4f24e036a084b6b4b2d2491af4167f4",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixos-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
-    "nixpkgs-rust": {
-      "locked": {
-        "lastModified": 1786599213,
-        "narHash": "sha256-yNJd40f11EzXBjSByCB7IPpeFFAdeoSKKM67dGkfFoU=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "0e251e24a4f24e036a084b6b4b2d2491af4167f4",
+        "rev": "ec2d622de0773551768cf98f3fc50cbcc003b9c5",
         "type": "github"
       },
       "original": {
@@ -54,18 +38,17 @@
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
-        "nixpkgs-rust": "nixpkgs-rust",
         "sqlite-database-integration": "sqlite-database-integration"
       }
     },
     "sqlite-database-integration": {
       "flake": false,
       "locked": {
-        "lastModified": 1785767487,
-        "narHash": "sha256-u6VEtxQdY5GR6598KUD6RqPG0yRO91dfdkPkt1mn1tE=",
+        "lastModified": 1787024550,
+        "narHash": "sha256-1SZn5D+w4pZ9yiy6dH6CfBJYeRY8KBdknyFAW7G7oYc=",
         "ref": "d1-support",
-        "rev": "3b853ed42940ca022f58136d34f6a48ca3ee57f7",
-        "revCount": 922,
+        "rev": "2fd583070e3008c152ef6cbbed0b8ed969d8536e",
+        "revCount": 943,
         "type": "git",
         "url": "https://github.com/Avunu/sqlite-database-integration"
       },

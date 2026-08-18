@@ -5,11 +5,6 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
 
-    # A fresh nixpkgs used only for the Rust toolchain building the native
-    # PHP extensions (their dependency trees need a newer cargo than the
-    # main pin provides).
-    nixpkgs-rust.url = "github:NixOS/nixpkgs/nixos-unstable";
-
     # The SQLite Database Integration project with the Cloudflare D1 backend.
     # Fetched over git (not the GitHub tarball API): the project's
     # .gitattributes marks /packages as export-ignore for WordPress.org
@@ -25,7 +20,6 @@
       self,
       nixpkgs,
       flake-utils,
-      nixpkgs-rust,
       sqlite-database-integration,
     }:
     {
@@ -34,7 +28,7 @@
       # enabling `database.type = "d1"` and the managed backend mode.
       nixosModules.default = import ./modules/nixos.nix {
         d1DriverSrc = sqlite-database-integration;
-        rustNixpkgs = nixpkgs-rust;
+        rustNixpkgs = nixpkgs;
       };
       nixosModules.wordpress-nix = self.nixosModules.default;
 
@@ -74,7 +68,7 @@
               wordpressHash
               ;
             d1DriverSrc = if d1 then sqlite-database-integration else null;
-            rustPkgs = nixpkgs-rust.legacyPackages.${pkgs.stdenv.hostPlatform.system};
+            rustPkgs = nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system};
           };
 
         # The Worker-Assets static tree for the same pinned core + wp-content.

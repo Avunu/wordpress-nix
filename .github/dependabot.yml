@@ -31,13 +31,9 @@ updates:
       npm:
         patterns: ["*"]
 
-  # Nix flake inputs — nixpkgs, flake-utils, nixpkgs-rust, and the pinned
+  # Nix flake inputs — nixpkgs, flake-utils, and the pinned
   # sqlite-database-integration D1 driver. Dependabot reads flake.lock directly
   # (schema v7) and covers the `git+https` driver input as well as the `github:` ones.
-  #
-  # Weekly, not daily: nixpkgs and nixpkgs-rust both track nixos-unstable, which moves
-  # constantly — a daily bump would be pure churn. Grouped into one PR so the two
-  # nixpkgs pins advance together instead of drifting apart across separate merges.
   #
   # A lock bump touches flake.lock, which is in the `worker` workflow's path filter, so
   # these PRs run the worker suite as well as the image build.
