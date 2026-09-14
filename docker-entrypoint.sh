@@ -123,18 +123,24 @@ if [ -f /object-cache.php ] && [ "${WORDPRESS_OBJECT_CACHE:-apcu}" != "none" ]; 
 fi
 
 # Install the WordPress SQLite Anywhere plugin and its database drop-in when
-# the image bundles them and a D1 proxy is configured. The drop-in picks the
-# engine from DB_ENGINE (an environment variable will do); a configured
-# WP_D1_PROXY_URL would select D1 on its own, but say so explicitly.
+# the image bundles them and a remote backend is configured. The drop-in picks
+# the engine from DB_ENGINE (an environment variable will do); a configured
+# WP_D1_PROXY_URL or WP_TURSO_URL would select it on its own, but say so
+# explicitly. A Turso site reads from an embedded replica when WP_TURSO_REPLICA
+# names a writable path (the image loads the wp_turso extension).
 if [ -d /wordpress-plugins/wordpress-sqlite-anywhere ]; then
     echo "Installing the WordPress SQLite Anywhere plugin"
     rm -rf /var/www/html/wp-content/plugins/wordpress-sqlite-anywhere /var/www/html/wp-content/plugins/sqlite-database-integration
     mkdir -p /var/www/html/wp-content/plugins
     cp -a /wordpress-plugins/wordpress-sqlite-anywhere /var/www/html/wp-content/plugins/
 
-    if [ -n "${WP_D1_PROXY_URL:-}" ]; then
-        echo "Installing the database drop-in (wp-content/db.php) for Cloudflare D1"
-        export DB_ENGINE="${DB_ENGINE:-d1}"
+    if [ -n "${WP_D1_PROXY_URL:-}" ] || [ -n "${WP_TURSO_URL:-}" ]; then
+        if [ -n "${WP_D1_PROXY_URL:-}" ]; then
+            export DB_ENGINE="${DB_ENGINE:-d1}"
+        else
+            export DB_ENGINE="${DB_ENGINE:-turso}"
+        fi
+        echo "Installing the database drop-in (wp-content/db.php) for $DB_ENGINE"
         sed -e "s|{SQLITE_IMPLEMENTATION_FOLDER_PATH}|/var/www/html/wp-content/plugins/wordpress-sqlite-anywhere|" \
             -e "s|{SQLITE_PLUGIN}|wordpress-sqlite-anywhere/wordpress-sqlite-anywhere.php|" \
             /var/www/html/wp-content/plugins/wordpress-sqlite-anywhere/db.copy \

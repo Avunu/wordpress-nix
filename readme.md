@@ -112,7 +112,27 @@ sets `DB_ENGINE` for you. The plugin requires PHP 8.5, so these modes need
 
 #### Turso
 
-Two shapes, chosen by whether `database.turso.snapshotPath` is set.
+Three shapes. `database.turso.embedded = true` is the one to reach for: the
+plugin's `wp_turso` extension holds an embedded replica open inside FrankenPHP,
+pulls the primary's changes into it every `pullIntervalMs` (and again at the
+end of any request that wrote), and serves every read from it at local-SQLite
+speed — wp-admin included, which on a WAN primary goes from ~1.5 s a page to
+~40 ms. Writes go to the primary. No publisher process, no snapshot copy.
+
+```nix
+services.wordpress-nix = {
+  enable = true;
+  php = pkgs.php85;
+  database.type = "turso";
+  database.turso = {
+    url = "libsql://site-org.turso.io";
+    tokenFile = "/run/agenix/site-turso-token";
+    embedded = true;
+  };
+};
+```
+
+The other two shapes are chosen by whether `database.turso.snapshotPath` is set.
 
 **Without a snapshot**, every statement goes to the primary. This is what the
 control plane wants — wp-admin and cron must read their own writes immediately.

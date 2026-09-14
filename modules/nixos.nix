@@ -69,6 +69,14 @@ let
   # The front end reads a published snapshot; without one every statement goes
   # to the primary, which is what the control plane wants.
   tursoSnapshot = turso && cfg.database.turso.snapshotPath != null;
+  # Or the PHP process holds an embedded replica itself, through the wp_turso
+  # extension: no publisher, reads at local speed on every plane.
+  tursoEmbedded = turso && cfg.database.turso.embedded;
+  tursoReplicaPath =
+    if cfg.database.turso.replicaPath != null then
+      cfg.database.turso.replicaPath
+    else
+      "${cfg.stateDir}/turso/replica.db";
 
   php = import ../lib/php.nix {
     inherit pkgs;
@@ -87,10 +95,13 @@ let
   rustPkgs =
     if rustNixpkgs != null then rustNixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system} else pkgs;
 
-  # --- D1 database mode plumbing ---
-  # Native wp_mysql_parser + wp_d1_client extensions, mirroring the OCI image.
+  # --- remote SQLite plumbing ---
+  # The native extensions, mirroring the OCI image: wp_mysql_parser speeds up
+  # the driver's translation on every remote backend (a rendered page is
+  # mostly that work once reads are local), wp_d1_client pools D1 requests,
+  # and wp_turso pools Turso requests and holds the embedded replica.
   phpExtensions =
-    if d1 then
+    if remoteSqlite then
       import ../lib/php-extensions.nix {
         inherit
           pkgs
@@ -144,14 +155,7 @@ let
           export TURSO_AUTH_TOKEN
         ''}
         exec ${getExe tursoPublisher} \
-          --replica ${
-            lib.escapeShellArg (
-              if cfg.database.turso.replicaPath != null then
-                cfg.database.turso.replicaPath
-              else
-                "${cfg.stateDir}/turso/replica.db"
-            )
-          } \
+          --replica ${lib.escapeShellArg tursoReplicaPath} \
           --published ${lib.escapeShellArg cfg.database.turso.snapshotPath} \
           --url ${lib.escapeShellArg cfg.database.turso.url} \
           "$@"
@@ -285,7 +289,17 @@ let
       ''}
       define('WP_TURSO_HTTP_TIMEOUT_MS', ${toString cfg.database.turso.requestTimeoutMs});
       ${
-        if tursoSnapshot then
+        if tursoEmbedded then
+          ''
+            // Reads come from an embedded replica the PHP process holds open (the
+            // wp_turso extension), pulled from the primary every
+            // ${toString cfg.database.turso.pullIntervalMs} ms and again at the end of
+            // any request that wrote, so the next request reads those writes. The
+            // first write in a request latches the rest of it to the primary.
+            define('WP_TURSO_REPLICA', '${tursoReplicaPath}');
+            define('WP_TURSO_REPLICA_PULL_MS', ${toString cfg.database.turso.pullIntervalMs});
+          ''
+        else if tursoSnapshot then
           ''
             // Reads come from the snapshot the publisher maintains; the first write
             // latches the rest of the request to the primary, so it reads its own
@@ -458,6 +472,13 @@ let
       # plugin wants writable (it drops an index.php and .htaccess there).
       install -d -m 0755 -o ${cfg.user} -g ${cfg.group} ${
         lib.escapeShellArg (builtins.dirOf cfg.database.turso.snapshotPath)
+      }
+    ''}
+    ${optionalString tursoEmbedded ''
+      # The embedded replica's directory: the PHP process bootstraps the file on
+      # first use and keeps it across restarts, which keeps each pull incremental.
+      install -d -m 0750 -o ${cfg.user} -g ${cfg.group} ${
+        lib.escapeShellArg (builtins.dirOf tursoReplicaPath)
       }
     ''}
 
@@ -760,16 +781,41 @@ in
             writes immediately.
           '';
         };
+        embedded = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Read from an embedded replica the PHP process holds open itself,
+            through the plugin's `wp_turso` extension, with writes still going to
+            the primary. No publisher process and no snapshot copy: the replica is
+            pulled from the primary every `pullIntervalMs`, and again at the end
+            of any request that wrote, so a redirect after a save finds what was
+            saved. Reads run at local-SQLite speed on every plane -- the admin
+            plane included, which a snapshot cannot offer.
+
+            One process owns the replica file (FrankenPHP's one process, many
+            threads). Mutually exclusive with `snapshotPath`.
+          '';
+        };
+        pullIntervalMs = mkOption {
+          type = types.int;
+          default = 1000;
+          description = ''
+            Milliseconds between the embedded replica's pulls from the primary:
+            the staleness bound for reads, at one small round trip each.
+          '';
+        };
         replicaPath = mkOption {
           type = types.nullOr types.str;
           default = null;
           example = "/var/lib/wordpress/turso/replica.db";
           description = ''
-            Where the publisher keeps its private embedded replica. Defaults to
+            Where the embedded replica lives: the publisher's private one with
+            `snapshotPath`, the PHP process's own with `embedded`. Defaults to
             `turso/replica.db` under the state directory.
 
-            Only the publisher may touch it: Turso holds an exclusive lock on a
-            live replica and coordinates its WAL through a file SQLite does not
+            Only its owner may touch it: Turso holds an exclusive lock on a live
+            replica and coordinates its WAL through a file SQLite does not
             understand, so nothing else can read it. Keeping it across restarts is
             what keeps each pull incremental.
           '';
@@ -903,6 +949,14 @@ in
       {
         assertion = !turso || !cfg.database.createLocally;
         message = "services.wordpress-nix: database.type = \"turso\" is remote-only; disable database.createLocally.";
+      }
+      {
+        assertion = !(tursoEmbedded && tursoSnapshot);
+        message = "services.wordpress-nix: database.turso.embedded and database.turso.snapshotPath are two ways to read locally; choose one.";
+      }
+      {
+        assertion = !tursoEmbedded || cfg.database.turso.pullIntervalMs > 0;
+        message = "services.wordpress-nix: database.turso.pullIntervalMs must be positive.";
       }
       {
         assertion = !tursoSnapshot || cfg.database.turso.publishIntervalSeconds > 0;

@@ -152,11 +152,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789166517,
-        "narHash": "sha256-+es5evYSQ9fGG/kogkxC8UbcZMs5NKELYN4A7NtFHV0=",
+        "lastModified": 1789403225,
+        "narHash": "sha256-COPsPEyKDCr9vtbi5S4y7oIl5hK81z5A+YCu8lCpWh4=",
         "ref": "main",
-        "rev": "f7bddf0316fabd8c85f30d2f7a591e488e7c8b1d",
-        "revCount": 35,
+        "rev": "1a748458dfa1bf3fb137432dc9b986b6da82bdfc",
+        "revCount": 42,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/Avunu/wordpress-sqlite-anywhere"
