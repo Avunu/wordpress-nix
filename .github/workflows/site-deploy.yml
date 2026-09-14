@@ -45,11 +45,11 @@ jobs:
       # `determinate: false` — no Determinate-only nixConfig here, so the
       # default install just has determinate-nixd fail to log into FlakeHub
       # for a repo that isn't registered there.
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
         with:
           determinate: false
       # `use-flakehub: false` — same reason, for the cache action's own probe.
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
         with:
           use-flakehub: false
 
