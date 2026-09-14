@@ -181,6 +181,26 @@ connection and coordinates its WAL through a file SQLite knows nothing about. Th
 publisher owns the replica and hands PHP a plain file instead. Nothing else may
 touch `database.turso.replicaPath`.
 
+#### Migrating a MySQL site
+
+Two tools, both flake packages, take a `mysqldump` to a populated Turso (or
+D1) database:
+
+```sh
+nix run github:Avunu/wordpress#mysql-to-sqlite -- dump.sql site.sqlite
+TURSO_AUTH_TOKEN=... nix run github:Avunu/wordpress#sqlite-to-turso -- site.sqlite libsql://site-org.turso.io
+```
+
+`mysql-to-sqlite` replays the dump through the MySQL-on-SQLite driver itself,
+so the SQLite file carries the exact schema — and the driver's emulated
+`INFORMATION_SCHEMA`, with MySQL column types intact — that the site will use
+at runtime. `sqlite-to-turso` copies that file into the Turso primary over its
+SQL-over-HTTP pipeline: tables, rows (as typed arguments, never SQL text),
+indexes, triggers, views and `AUTOINCREMENT` counters, then verifies every
+table's row count. It refuses a target that already has tables unless you
+pass `--replace`. The token comes from `TURSO_AUTH_TOKEN` (or
+`TURSO_AUTH_TOKEN_FILE`); it is never taken from the command line.
+
 ## Containers
 
 The container path is unchanged: WordPress is downloaded at container start

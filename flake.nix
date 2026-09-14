@@ -143,6 +143,8 @@
             # The assembled driver package (upstream + the plugin's patches).
             driverSrc = "${wordpress-sqlite-anywhere.packages.${system}.driver}/src";
           };
+          # Migration, step two: load the SQLite file into a Turso database.
+          sqlite-to-turso = import ./lib/sqlite-to-turso.nix { inherit pkgs; };
           # The Turso snapshot publisher: the front end's read path. A live Turso
           # replica cannot be read by pdo_sqlite, so this hands PHP a plain
           # SQLite file instead. See the package's README.
@@ -173,6 +175,12 @@
           mysql-to-sqlite = import ./tools/test/mysql-to-sqlite-test.nix {
             inherit pkgs;
             converter = self.packages.${system}.mysql-to-sqlite;
+          };
+          # Loader round-trip against a local tursodb sync server.
+          sqlite-to-turso = import ./tools/test/sqlite-to-turso-test.nix {
+            inherit pkgs;
+            converter = self.packages.${system}.mysql-to-sqlite;
+            loader = self.packages.${system}.sqlite-to-turso;
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
