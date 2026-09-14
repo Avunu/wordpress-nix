@@ -191,10 +191,16 @@ nix run github:Avunu/wordpress#mysql-to-sqlite -- dump.sql site.sqlite
 TURSO_AUTH_TOKEN=... nix run github:Avunu/wordpress#sqlite-to-turso -- site.sqlite libsql://site-org.turso.io
 ```
 
-`mysql-to-sqlite` replays the dump through the MySQL-on-SQLite driver itself,
-so the SQLite file carries the exact schema — and the driver's emulated
-`INFORMATION_SCHEMA`, with MySQL column types intact — that the site will use
-at runtime. `sqlite-to-turso` copies that file into the Turso primary over its
+`mysql-to-sqlite` replays the dump through the MySQL-on-SQLite driver itself
+(with the same native parser the site runs on — a 130 MB dump takes about a
+minute), so the SQLite file carries the exact schema — and the driver's
+emulated `INFORMATION_SCHEMA`, with MySQL column types intact — that the site
+will use at runtime. It replays under the SQL mode mysqldump sets, so
+`0000-00-00` dates and the rest of what was valid on the source load as they
+were. Triggers, procedures, functions and events are not migrated and are
+reported one by one: WordPress creates none, so **read every one the report
+lists** — a trigger on `wp_comments` that inserts an administrator is a
+well-known backdoor. `sqlite-to-turso` copies that file into the Turso primary over its
 SQL-over-HTTP pipeline: tables, rows (as typed arguments, never SQL text),
 indexes, triggers, views and `AUTOINCREMENT` counters, then verifies every
 table's row count. It refuses a target that already has tables unless you

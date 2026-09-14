@@ -5,7 +5,9 @@
 # Packaged with the platform PHP build and the pinned, assembled driver source
 # (wordpress-sqlite-anywhere's `driver` package: upstream plus the plugin's
 # patches), so a migration never depends on whatever PHP happens to be on the
-# operator's machine.
+# operator's machine. The driver's native parser extension is loaded when
+# given: a real dump is a gigabyte of INSERTs, and the Rust parser is ~15x
+# faster than the pure-PHP one.
 #
 #   nix run github:Avunu/wordpress#mysql-to-sqlite -- dump.sql out.sqlite
 {
@@ -15,12 +17,17 @@
   php,
   # The driver's src/ directory (contains load.php).
   driverSrc,
+  # The wp_mysql_parser extension built against `php`, or null for the
+  # pure-PHP parser.
+  parserExtension ? null,
 }:
 pkgs.writeShellApplication {
   name = "mysql-to-sqlite";
   runtimeInputs = [ php ];
   text = ''
     export WP_MYSQL_ON_SQLITE_SRC=${driverSrc}
-    exec php ${../tools/mysql-to-sqlite.php} "$@"
+    exec php -d memory_limit=-1 ${
+      pkgs.lib.optionalString (parserExtension != null) "-d extension=${parserExtension}/lib/libwp_mysql_parser.so"
+    } ${../tools/mysql-to-sqlite.php} "$@"
   '';
 }

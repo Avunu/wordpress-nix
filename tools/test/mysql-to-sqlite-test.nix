@@ -18,7 +18,8 @@ pkgs.runCommand "mysql-to-sqlite-test"
   }
   ''
     set -euo pipefail
-    mysql-to-sqlite ${../test/fixture-dump.sql} ./out.sqlite --quiet
+    mysql-to-sqlite ${../test/fixture-dump.sql} ./out.sqlite --quiet --continue-on-error 2> convert.log || true
+    cat convert.log
 
     fail() { echo "FAIL: $1" >&2; exit 1; }
     q() { sqlite3 ./out.sqlite "$1"; }
@@ -34,7 +35,17 @@ pkgs.runCommand "mysql-to-sqlite-test"
       || fail "serialized PHP payload was corrupted"
     q "SELECT post_content FROM wp_posts WHERE ID=1;" | grep -q '🎉' \
       || fail "utf8mb4 content did not survive"
-    [ "$(q "SELECT COUNT(*) FROM wp_posts;")" = "2" ] || fail "expected 2 posts"
+    [ "$(q "SELECT COUNT(*) FROM wp_posts;")" = "452" ] \
+      || fail "expected 452 posts (extended INSERT chunking lost rows?)"
+    [ "$(q "SELECT post_content FROM wp_posts WHERE ID=100;")" = "row 100 ),( not a boundary" ] \
+      || fail "a '),(' inside a string literal was taken for a row boundary"
+    [ "$(q "SELECT post_date FROM wp_posts WHERE ID=200;")" = "0000-00-00 00:00:00" ] \
+      || fail "a zero date was rejected or altered (mysqldump's SQL mode not applied?)"
+    [ "$(q "SELECT COUNT(*) FROM wp_options WHERE option_name='trigger_ran';")" = "0" ] \
+      || fail "a fragment of a DELIMITER-wrapped trigger body was executed"
+    grep -q 'CREATE TRIGGER is not supported' convert.log || fail "the trigger was not reported as a failed statement"
+    [ "$(grep -c '^  \[' convert.log)" = "1" ] \
+      || { cat convert.log; fail "expected exactly one failed statement (the trigger)"; }
 
     # --- schema fidelity: the reason we replay through the driver at all ---
     # A generic MySQL->SQLite converter produces the physical tables but NOT
