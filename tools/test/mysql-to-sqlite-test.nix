@@ -64,6 +64,11 @@ pkgs.runCommand "mysql-to-sqlite-test"
     [ "$(types wp_posts post_content)" = "longtext" ] \
       || fail "longtext was lost"
 
+    # UNIQUE KEY must become a UNIQUE index: the driver only does so when it
+    # runs with stringified fetches, as it does under WordPress.
+    q "SELECT sql FROM sqlite_master WHERE name='wp_options__option_name';" | grep -q 'CREATE UNIQUE INDEX' \
+      || fail "UNIQUE KEY option_name was created as a plain index"
+
     # The emulated information schema must know every migrated table.
     [ "$(q "SELECT COUNT(*) FROM _wp_sqlite_mysql_information_schema_tables \
             WHERE table_name IN ('wp_options','wp_posts','custom_plugin_table');")" = "3" ] \

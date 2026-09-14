@@ -151,6 +151,11 @@
                 rustPkgs = nixpkgs.legacyPackages.${system};
               };
             };
+          # Migration, step zero when a plugin rewrote the core tables' keys.
+          restore-core-keys = import ./lib/restore-core-keys.nix {
+            inherit pkgs;
+            php = pkgs.php85;
+          };
           # Migration, step two: load the SQLite file into a Turso database.
           sqlite-to-turso = import ./lib/sqlite-to-turso.nix { inherit pkgs; };
           # The Turso snapshot publisher: the front end's read path. A live Turso
@@ -182,6 +187,12 @@
           # Converter round-trip: data + MySQL type metadata fidelity.
           mysql-to-sqlite = import ./tools/test/mysql-to-sqlite-test.nix {
             inherit pkgs;
+            converter = self.packages.${system}.mysql-to-sqlite;
+          };
+          # Key restoration on a plugin-mangled dump, then conversion.
+          restore-core-keys = import ./tools/test/restore-core-keys-test.nix {
+            inherit pkgs;
+            restoreCoreKeys = self.packages.${system}.restore-core-keys;
             converter = self.packages.${system}.mysql-to-sqlite;
           };
           # Loader round-trip against a local tursodb sync server.

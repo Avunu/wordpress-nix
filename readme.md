@@ -183,13 +183,25 @@ touch `database.turso.replicaPath`.
 
 #### Migrating a MySQL site
 
-Two tools, both flake packages, take a `mysqldump` to a populated Turso (or
+Three tools, all flake packages, take a `mysqldump` to a populated Turso (or
 D1) database:
 
 ```sh
-nix run github:Avunu/wordpress#mysql-to-sqlite -- dump.sql site.sqlite
+nix run github:Avunu/wordpress#restore-core-keys -- dump.sql dump-fixed.sql   # only if a plugin rewrote core keys
+nix run github:Avunu/wordpress#mysql-to-sqlite -- dump-fixed.sql site.sqlite
 TURSO_AUTH_TOKEN=... nix run github:Avunu/wordpress#sqlite-to-turso -- site.sqlite libsql://site-org.turso.io
 ```
+
+`restore-core-keys` matters when the site ran a plugin such as
+`index-wp-mysql-for-speed`, which rewrites the core tables' keys (`wp_options`
+gets `PRIMARY KEY (option_name)`; the meta tables get composite primary keys).
+The driver keeps the `AUTO_INCREMENT` column as SQLite's primary key and has
+no place for a second one, so `option_name` would lose its uniqueness and
+`INSERT … ON DUPLICATE KEY UPDATE` its safety. The tool replaces the key lines
+of every core table that differs from `wp_get_db_schema()` — taken from the
+platform's pinned core — and reports what it changed; columns are kept as
+dumped, and a table lacking a column the standard keys need is left alone
+with a warning. Run it on every dump: it is a no-op for a standard schema.
 
 `mysql-to-sqlite` replays the dump through the MySQL-on-SQLite driver itself
 (with the same native parser the site runs on — a 130 MB dump takes about a

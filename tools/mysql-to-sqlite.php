@@ -411,6 +411,13 @@ try {
 	fwrite( STDERR, 'error: failed to open the SQLite database: ' . $e->getMessage() . "\n" );
 	exit( 2 );
 }
+/*
+ * WordPress runs the driver with stringified fetches, and the driver is
+ * written for that: it compares information-schema values it reads back as
+ * strings ('0' === NON_UNIQUE), so without this every UNIQUE KEY would be
+ * created as a plain index -- wp_options.option_name included.
+ */
+$driver->setAttribute( PDO::ATTR_STRINGIFY_FETCHES, true );
 
 /*
  * Replay under the SQL mode mysqldump itself sets at the top of every dump
