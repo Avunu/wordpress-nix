@@ -204,8 +204,20 @@ well-known backdoor. `sqlite-to-turso` copies that file into the Turso primary o
 SQL-over-HTTP pipeline: tables, rows (as typed arguments, never SQL text),
 indexes, triggers, views and `AUTOINCREMENT` counters, then verifies every
 table's row count. It refuses a target that already has tables unless you
-pass `--replace`. The token comes from `TURSO_AUTH_TOKEN` (or
-`TURSO_AUTH_TOKEN_FILE`); it is never taken from the command line.
+pass `--replace` (start over) or `--resume` (finish an interrupted load:
+complete tables are skipped, partial ones reloaded). Gateway errors are
+retried; every request is one transaction, so a retry never duplicates rows.
+The token comes from `TURSO_AUTH_TOKEN` (or `TURSO_AUTH_TOKEN_FILE`); it is
+never taken from the command line.
+
+The tables are created **without `AUTOINCREMENT`** unless you pass
+`--keep-autoincrement`. Turso's engine appends a row to a backing sequence
+table for every `AUTOINCREMENT` row and compacts only at commit, which makes
+a multi-row insert quadratic: 2,000 rows took 23 s against 0.4 s for the same
+table with a plain `INTEGER PRIMARY KEY`, and a real site's load went from
+hours to minutes. Single-row inserts — what WordPress does at runtime — cost
+the same either way. The only semantic difference is that the id of a
+deleted highest row may be reused, which WordPress does not depend on.
 
 ## Containers
 

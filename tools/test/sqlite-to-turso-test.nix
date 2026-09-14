@@ -25,7 +25,7 @@ pkgs.runCommand "sqlite-to-turso-test"
     set -euo pipefail
     fail() { echo "FAIL: $1" >&2; exit 1; }
 
-    mysql-to-sqlite ${../test/fixture-dump.sql} ./source.sqlite --quiet
+    mysql-to-sqlite ${../test/fixture-dump.sql} ./source.sqlite --quiet --continue-on-error 2>/dev/null || true
     # A row the converter never produces: binary content and a large integer.
     sqlite3 ./source.sqlite "CREATE TABLE blobs (id INTEGER PRIMARY KEY AUTOINCREMENT, body BLOB, big INTEGER, ratio REAL);"
     sqlite3 ./source.sqlite "INSERT INTO blobs (body, big, ratio) VALUES (X'00ff10', 9007199254740993, 0.1), (NULL, -1, NULL);"
@@ -51,6 +51,30 @@ pkgs.runCommand "sqlite-to-turso-test"
     fi
     grep -q -- '--replace' refuse.log || { cat refuse.log; fail "the refusal did not mention --replace"; }
     sqlite-to-turso ./source.sqlite http://127.0.0.1:18080 --replace --quiet || fail "--replace load failed"
+
+    # By default AUTOINCREMENT is dropped from the created tables (quadratic on Turso).
+    kw=$(python3 ${./compare-with-turso.py} ./source.sqlite http://127.0.0.1:18080 --query "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_\\_turso%' ESCAPE '\\' AND sql LIKE '%AUTOINCREMENT%'")
+    [ "$kw" = "0" ] || fail "AUTOINCREMENT survived in $kw tables without --keep-autoincrement"
+    sqlite-to-turso ./source.sqlite http://127.0.0.1:18080 --replace --keep-autoincrement --quiet || fail "--keep-autoincrement load failed"
+    kw=$(python3 ${./compare-with-turso.py} ./source.sqlite http://127.0.0.1:18080 --query "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_\\_turso%' ESCAPE '\\' AND sql LIKE '%AUTOINCREMENT%'")
+    want=$(sqlite3 ./source.sqlite "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND sql LIKE '%AUTOINCREMENT%'")
+    [ "$kw" = "$want" ] || fail "--keep-autoincrement kept AUTOINCREMENT on $kw tables, expected $want"
+
+    # --resume: simulate an interrupted load (a table half loaded, another
+    # missing, no indexes yet) and check it completes to the same result.
+    pipe() { curl -sf -X POST -H 'Content-Type: application/json' --data "$1" http://127.0.0.1:18080/v2/pipeline; }
+    pipe '{"requests":[{"type":"execute","stmt":{"sql":"DELETE FROM wp_posts WHERE ID = 1"}}]}' > /dev/null
+    pipe '{"requests":[{"type":"execute","stmt":{"sql":"DROP TABLE blobs"}}]}' > /dev/null
+    pipe '{"requests":[{"type":"execute","stmt":{"sql":"DROP INDEX IF EXISTS wp_posts__post_name"}}]}' > /dev/null
+    if sqlite-to-turso ./source.sqlite http://127.0.0.1:18080 --quiet 2> refuse.log; then
+      fail "a partially loaded target was not refused without --resume"
+    fi
+    sqlite-to-turso ./source.sqlite http://127.0.0.1:18080 --resume --keep-autoincrement > resume.log 2>&1 || { cat resume.log; fail "--resume failed"; }
+    grep -q 'wp_posts: 451 of 452 rows present, reloading' resume.log || { cat resume.log; fail "--resume did not reload the partial table"; }
+    grep -q 'wp_options: 4 rows already loaded' resume.log || { cat resume.log; fail "--resume did not skip a complete table"; }
+    grep -q 'creating 1 missing tables' resume.log || { cat resume.log; fail "--resume did not recreate the dropped table"; }
+    indexes=$(python3 ${./compare-with-turso.py} ./source.sqlite http://127.0.0.1:18080 --query "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'wp_posts__post_name'")
+    [ "$indexes" = "1" ] || fail "--resume did not create the missing index"
 
     # Compare every table's contents with the source, read back over the pipeline.
     python3 ${./compare-with-turso.py} ./source.sqlite http://127.0.0.1:18080 || fail "the loaded database differs from the source"

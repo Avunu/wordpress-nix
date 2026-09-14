@@ -9,12 +9,24 @@ SQL text for the rows: values travel as typed pipeline arguments, so quoting,
 binary content and integers beyond JSON's range are never an issue.
 
 Usage:
-  sqlite-to-turso <database.sqlite> <turso url> [--replace] [--rows-per-statement N]
-                  [--statements-per-request N] [--pipeline-path /v2/pipeline] [--quiet]
+  sqlite-to-turso <database.sqlite> <turso url> [--replace | --resume]
+                  [--keep-autoincrement] [--rows-per-statement N]
+                  [--statements-per-request N] [--pipeline-path /v2/pipeline]
+                  [--quiet]
+
+AUTOINCREMENT is dropped from the created tables unless --keep-autoincrement
+is given: Turso's engine appends a row to a backing sequence table for every
+AUTOINCREMENT row inserted, compacting only at commit, so a multi-row insert
+costs O(rows^2) -- 2,000 rows took 23 s against 0.4 s without the keyword, and
+it worsens as the table grows. A plain INTEGER PRIMARY KEY behaves the same
+except that the id of a deleted highest row may be reused, which WordPress
+does not depend on.
 
 The auth token is read from TURSO_AUTH_TOKEN (or TURSO_AUTH_TOKEN_FILE), never
 from the command line. A target that already has tables is refused unless
---replace is given, which drops them first.
+--replace is given, which drops them first, or --resume, which continues an
+interrupted load: tables whose row count already matches are skipped, the
+rest are emptied and loaded again.
 
 Exit codes: 0 success · 1 usage/IO error · 2 load or verification error.
 """
@@ -25,19 +37,25 @@ import argparse
 import base64
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.request
 
-DEFAULT_ROWS_PER_STATEMENT = 200
-DEFAULT_STATEMENTS_PER_REQUEST = 8
-# The pipeline is JSON over HTTP; keep a request comfortably below the
-# server's body limits.
+# Measured against Turso Cloud: 4 x 500-row statements per request load at
+# ~5,000 rows/s; larger transactions gain nothing and take longer to retry.
+DEFAULT_ROWS_PER_STATEMENT = 500
+DEFAULT_STATEMENTS_PER_REQUEST = 4
+# The pipeline is JSON over HTTP; keep a statement and a request comfortably
+# below the server's body limits (post_content rows can be large).
+MAX_STATEMENT_BYTES = 1024 * 1024
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 # Positional parameters per statement stay well under SQLite's limit.
 MAX_PARAMS_PER_STATEMENT = 2000
+# Attempts per request, with exponential backoff (1 + 2 + ... + 32 s).
+RETRIES = 6
 
 
 class LoadError(Exception):
@@ -57,17 +75,25 @@ class Pipeline:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         req = urllib.request.Request(self.endpoint, data=body, headers=headers, method="POST")
-        for attempt in range(4):
+        # Every request is one atomic transaction (see batch()), so a failed
+        # request left nothing behind and can simply be sent again. Gateway
+        # errors and rate limits are what a long load over a WAN actually
+        # meets; anything else is a real error.
+        for attempt in range(RETRIES):
             try:
                 with urllib.request.urlopen(req, timeout=120) as response:
                     payload = json.load(response)
                 break
             except urllib.error.HTTPError as e:
                 text = e.read().decode(errors="replace")
-                raise LoadError(f"HTTP {e.code} from the pipeline: {text[:500]}") from None
+                if e.code not in (429, 500, 502, 503, 504) or attempt == RETRIES - 1:
+                    raise LoadError(f"HTTP {e.code} from the pipeline: {text[:500]}") from None
+                print(f"sqlite-to-turso: HTTP {e.code}, retrying in {2 ** attempt} s", file=sys.stderr)
+                time.sleep(2 ** attempt)
             except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                if attempt == 3:
+                if attempt == RETRIES - 1:
                     raise LoadError(f"the pipeline request failed: {e}") from None
+                print(f"sqlite-to-turso: {e}, retrying in {2 ** attempt} s", file=sys.stderr)
                 time.sleep(2 ** attempt)
         results = payload.get("results")
         if not isinstance(results, list):
@@ -178,6 +204,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("database", help="the SQLite file to load")
     parser.add_argument("url", help="the Turso database URL (libsql://, turso:// or https://)")
     parser.add_argument("--replace", action="store_true", help="drop the target's existing tables first")
+    parser.add_argument("--resume", action="store_true", help="continue an interrupted load of the same file")
+    parser.add_argument("--keep-autoincrement", action="store_true", help="keep AUTOINCREMENT on the created tables (slow on Turso)")
     parser.add_argument("--rows-per-statement", type=int, default=DEFAULT_ROWS_PER_STATEMENT)
     parser.add_argument("--statements-per-request", type=int, default=DEFAULT_STATEMENTS_PER_REQUEST)
     parser.add_argument("--pipeline-path", default="/v2/pipeline")
@@ -208,7 +236,11 @@ def main(argv: list[str]) -> int:
 
 def load(pipeline: Pipeline, local: sqlite3.Connection, args) -> int:
     quiet = args.quiet
+    if args.replace and args.resume:
+        raise LoadError("--replace and --resume are mutually exclusive")
     existing = remote_objects(pipeline)
+    if existing and args.resume:
+        return resume(pipeline, local, args, existing)
     if existing:
         if not args.replace:
             names = ", ".join(name for _, name in existing[:8])
@@ -227,17 +259,13 @@ def load(pipeline: Pipeline, local: sqlite3.Connection, args) -> int:
         for i in range(0, len(drops), 50):
             pipeline.batch(drops[i : i + 50])
 
-    schema = local.execute(
-        "SELECT type, name, tbl_name, sql FROM sqlite_master "
-        "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
-        "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'trigger' THEN 2 WHEN 'view' THEN 3 ELSE 4 END, rowid"
-    ).fetchall()
+    schema = local_schema(local)
     tables = [name for kind, name, _, _ in schema if kind == "table"]
     if not tables:
         raise LoadError("the SQLite file has no tables")
 
-    log(quiet, f"creating {len(tables)} tables")
-    creates = [(sql, []) for kind, _, _, sql in schema if kind == "table"]
+    log(quiet, f"creating {len(tables)} tables" + ("" if args.keep_autoincrement else " (without AUTOINCREMENT)"))
+    creates = [(create_sql(sql, args), []) for kind, _, _, sql in schema if kind == "table"]
     for i in range(0, len(creates), 50):
         pipeline.batch(creates[i : i + 50])
 
@@ -246,6 +274,62 @@ def load(pipeline: Pipeline, local: sqlite3.Connection, args) -> int:
     for table in tables:
         total_rows += load_table(pipeline, local, table, args)
 
+    return finish(pipeline, local, args, schema, tables, total_rows, started)
+
+
+def resume(pipeline: Pipeline, local: sqlite3.Connection, args, existing: list[tuple[str, str]]) -> int:
+    """Continue an interrupted load: keep complete tables, redo the rest."""
+    quiet = args.quiet
+    schema = local_schema(local)
+    tables = [name for kind, name, _, _ in schema if kind == "table"]
+    remote_tables = {name for kind, name in existing if kind == "table"}
+    missing = [t for t in tables if t not in remote_tables]
+    if missing:
+        log(quiet, f"creating {len(missing)} missing tables")
+        creates = [(create_sql(sql, args), []) for kind, name, _, sql in schema if kind == "table" and name in missing]
+        for i in range(0, len(creates), 50):
+            pipeline.batch(creates[i : i + 50])
+
+    total_rows = 0
+    started = time.monotonic()
+    for table in tables:
+        quoted = quote_identifier(table)
+        local_count = local.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+        remote_count = int(decode_row(pipeline.execute(f"SELECT COUNT(*) FROM {quoted}")["rows"][0])[0]) if table in remote_tables else 0
+        if remote_count == local_count:
+            log(quiet, f"  {table}: {local_count} rows already loaded")
+            total_rows += local_count
+            continue
+        if remote_count:
+            log(quiet, f"  {table}: {remote_count} of {local_count} rows present, reloading")
+            pipeline.execute(f"DELETE FROM {quoted}")
+        total_rows += load_table(pipeline, local, table, args)
+
+    # Indexes, triggers and views are created once the rows are in; an
+    # interrupted first pass never got that far, so create what is missing.
+    remote_names = {name for _, name in existing}
+    schema = [entry for entry in schema if entry[0] == "table" or entry[1] not in remote_names]
+    return finish(pipeline, local, args, schema, tables, total_rows, started)
+
+
+def create_sql(sql: str, args) -> str:
+    """The CREATE TABLE to send: as in the file, minus AUTOINCREMENT by default."""
+    if args.keep_autoincrement:
+        return sql
+    return re.sub(r"\s+AUTOINCREMENT\b", "", sql, flags=re.IGNORECASE)
+
+
+def local_schema(local: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+    return local.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
+        "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'trigger' THEN 2 WHEN 'view' THEN 3 ELSE 4 END, rowid"
+    ).fetchall()
+
+
+def finish(pipeline: Pipeline, local: sqlite3.Connection, args, schema, tables: list[str], total_rows: int, started: float) -> int:
+    """Create the secondary objects, set the counters, verify."""
+    quiet = args.quiet
     later = [(sql, []) for kind, _, _, sql in schema if kind in ("index", "trigger", "view")]
     if later:
         log(quiet, f"creating {len(later)} indexes, triggers and views")
@@ -254,7 +338,7 @@ def load(pipeline: Pipeline, local: sqlite3.Connection, args) -> int:
 
     # AUTOINCREMENT counters: inserting explicit ids already advanced them, but
     # a counter can sit above the highest id when rows were deleted.
-    sequences = local.execute("SELECT name, seq FROM sqlite_sequence").fetchall() if has_sequence(local) else []
+    sequences = local.execute("SELECT name, seq FROM sqlite_sequence").fetchall() if has_sequence(local) and args.keep_autoincrement else []
     if sequences:
         statements = []
         for name, seq in sequences:
@@ -308,20 +392,30 @@ def load_table(pipeline: Pipeline, local: sqlite3.Connection, table: str, args) 
             pipeline.batch(pending)
             pending, pending_bytes = [], 0
 
-    while True:
-        rows = cursor.fetchmany(rows_per_statement)
-        if not rows:
-            break
-        values = []
-        for row in rows:
-            values.extend(encode_value(v) for v in row)
-        sql = f"INSERT INTO {quoted} ({column_list}) VALUES " + ", ".join([placeholders] * len(rows))
-        size = len(json.dumps(values)) + len(sql)
+    def queue(statement_rows: list[list[dict]], size: int) -> None:
+        nonlocal pending_bytes
+        sql = f"INSERT INTO {quoted} ({column_list}) VALUES " + ", ".join([placeholders] * len(statement_rows))
+        size += len(sql)
         if pending and (len(pending) >= args.statements_per_request or pending_bytes + size > MAX_REQUEST_BYTES):
             flush()
-        pending.append((sql, values))
+        pending.append((sql, [v for r in statement_rows for v in r]))
         pending_bytes += size
-        count += len(rows)
+
+    # A statement holds up to rows_per_statement rows, or fewer when their
+    # encoded size would exceed the statement budget.
+    statement_rows: list[list[dict]] = []
+    statement_bytes = 0
+    for row in cursor:
+        encoded = [encode_value(v) for v in row]
+        size = len(json.dumps(encoded))
+        if statement_rows and (len(statement_rows) >= rows_per_statement or statement_bytes + size > MAX_STATEMENT_BYTES):
+            queue(statement_rows, statement_bytes)
+            statement_rows, statement_bytes = [], 0
+        statement_rows.append(encoded)
+        statement_bytes += size
+        count += 1
+    if statement_rows:
+        queue(statement_rows, statement_bytes)
     flush()
     log(args.quiet, f"  {table}: {count} rows in {time.monotonic() - started:.1f} s")
     return count
