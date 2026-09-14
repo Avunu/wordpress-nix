@@ -9,8 +9,8 @@
   hash ? null,
 }:
 let
-  pinnedVersion = "7.0.1";
-  pinnedHash = "sha256-vkzmfQpcj/qYT26PXi+V2ji/F5tKJhk0zZJ9QkHwQoY=";
+  pinnedVersion = "7.1";
+  pinnedHash = "sha256-UcQwR1rtmJp0caeviabt/dGztSIIadMBb905vmweZCo=";
 in
 pkgs.fetchzip {
   url = "https://wordpress.org/wordpress-${if version != null then version else pinnedVersion}.zip";
