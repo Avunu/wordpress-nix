@@ -21,6 +21,9 @@ updates:
 
   # The platform edge Worker (worker/package.json + worker/package-lock.json).
   # Bumps here trigger the `worker` workflow, which runs the vitest suite.
+  # vitest stays on the major @cloudflare/vitest-pool-workers declares as its
+  # peer (4.x for 0.22): Dependabot's grouped bump does not check peer ranges,
+  # and a vitest major ahead of the pool leaves `npm ci` unable to resolve.
   - package-ecosystem: npm
     directory: /worker
     schedule:
@@ -30,6 +33,9 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+    ignore:
+      - dependency-name: vitest
+        update-types: ["version-update:semver-major"]
 
   # Nix flake inputs — nixpkgs, flake-utils, and the pinned
   # wordpress-sqlite-anywhere plugin. Dependabot reads flake.lock directly
