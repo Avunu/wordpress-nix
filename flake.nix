@@ -4,6 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # The site dev shell (modules/devenv.nix) is a flake-parts + devenv module,
+    # as in frappe-nix and odoo-nix; site flakes consume it through
+    # lib.mkFlake and flakeModules.default.
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    devenv.url = "github:cachix/devenv";
 
     # WordPress SQLite Anywhere: the SQLite Database Integration driver with
     # the Turso and Cloudflare D1 backends, as one plugin with one db.php
@@ -15,14 +20,26 @@
     };
   };
 
+  nixConfig = {
+    extra-substituters = [ "https://devenv.cachix.org" ];
+    extra-trusted-public-keys = [
+      "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+    ];
+  };
+
   outputs =
     {
       self,
       nixpkgs,
       flake-utils,
+      flake-parts,
       wordpress-sqlite-anywhere,
+      ...
     }:
     {
+      # The site dev shell + image, as a flake-parts module. See templates/site.
+      flakeModules.default = ./modules/flake-module.nix;
+
       # Deploy WordPress directly on NixOS. See readme.md for usage.
       # The flake wiring injects the SQLite plugin flake + Rust toolchain pin,
       # enabling `database.type = "d1"` / `"turso"` and the managed backend mode.
@@ -34,6 +51,21 @@
 
       # Composable builders, reused by the container build and available to consumers.
       lib = {
+        # flake-parts entry point for site flakes: wordpress-nix's own inputs
+        # (nixpkgs, devenv, the plugin flake) are merged under the site's, so
+        # a site declares only wordpress-nix.
+        #   outputs = { self, wordpress-nix, ... }@inputs:
+        #     wordpress-nix.lib.mkFlake { inherit inputs; } ({ ... }: { imports = [ wordpress-nix.flakeModules.default ]; ... });
+        mkFlake =
+          {
+            inputs ? { },
+            ...
+          }:
+          config:
+          flake-parts.lib.mkFlake {
+            inputs = self.inputs // inputs;
+          } config;
+
         mkPhp = import ./lib/php.nix; # { pkgs, php ? pkgs.php83, optimize ? true, ... }
         mkFrankenphp = import ./lib/frankenphp.nix; # { pkgs, php }
         mkWordPressSite = import ./lib/site.nix; # { pkgs, src, php ? ..., plugins ? {}, themes ? {} }

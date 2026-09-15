@@ -242,6 +242,46 @@ hours to minutes. Single-row inserts — what WordPress does at runtime — cost
 the same either way. The only semantic difference is that the id of a
 deleted highest row may be reused, which WordPress does not depend on.
 
+## Developing a site
+
+`flakeModules.default` is a [flake-parts](https://flake.parts) + [devenv](https://devenv.sh)
+module, in the shape frappe-nix and odoo-nix use. A site flake imports it through
+`lib.mkFlake` (which merges wordpress-nix's own inputs — nixpkgs, devenv, the plugin
+flake — under the site's, so the site declares only `wordpress-nix`) and sets
+`perSystem.wordpress-nix`:
+
+```nix
+outputs = { self, wordpress-nix, ... }@inputs:
+  wordpress-nix.lib.mkFlake { inherit inputs; } ({ ... }: {
+    imports = [ wordpress-nix.flakeModules.default ];
+    systems = [ "x86_64-linux" "aarch64-linux" ];
+    perSystem.wordpress-nix = {
+      enable = true;
+      siteName = "example";          # ports and the image name derive from it
+      siteRoot = ./.;                # wp-content/ lives here
+      database.type = "sqlite";      # | "turso" | "mysql"
+      configExtra = siteConfig;      # the site's non-secret wp-config constants
+    };
+  });
+```
+
+`nix develop --impure` (or direnv with `use flake . --no-pure-eval`) gives a shell where
+`devenv up` runs the site as the platform does: the pinned core symlinked over the
+checkout's `wp-content/` (the managed-mode layout), the platform PHP 8.5 with
+`wp_mysql_parser`, `wp_d1_client` and `wp_turso`, FrankenPHP, the SQLite Anywhere `db.php`
+drop-in and the platform mu-plugins — with `wp-cli`, the migration tools (`wp-import`
+runs `restore-core-keys → mysql-to-sqlite` on a dump), `wp-admin-user`, `wp-reset`, and
+Mailpit catching all mail. The same options build `packages.image`, `static-assets` and
+`worker`. Database shapes:
+
+| `database.type` | dev shell |
+|---|---|
+| `sqlite` (default) | a file under `.devenv/state/`, through the same driver the remote engines use — no server |
+| `turso` | a local `tursodb --sync-server` (or `database.turso.url`, token from `WP_TURSO_TOKEN`), read through the embedded replica as in production; `wp` talks to the primary |
+| `mysql` | devenv's MariaDB |
+
+`nix flake init -t github:Avunu/wordpress#site` scaffolds a site repo with this flake.
+
 ## Containers
 
 The container path is unchanged: WordPress is downloaded at container start

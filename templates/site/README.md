@@ -26,8 +26,31 @@ at the revision pinned in `flake.lock`.
 
 ## Local development
 
+`flake.nix` enables wordpress-nix's devenv module, so the site runs locally on
+the platform stack — the pinned core, PHP 8.5 with the driver's native
+extensions, FrankenPHP, the WordPress SQLite Anywhere drop-in, the platform
+mu-plugins — over this repo's `wp-content/`:
+
 ```sh
-nix develop                      # wrangler, node, etc.
+direnv allow                     # or: nix develop --impure
+devenv up                        # FrankenPHP (+ Mailpit) → http://127.0.0.1:<port>
+wp-import dump.sql               # restore-core-keys → mysql-to-sqlite → the dev database
+wp-admin-user                    # a local administrator (prints the password)
+wp plugin list                   # wp-cli against the dev site
+```
+
+The port is hashed from `siteName`, so every clone gets the same one. The
+database is a SQLite file under `.devenv/state/` by default (no server);
+`database.type = "turso"` runs a local `tursodb` and reads through the
+embedded replica exactly as production does, and `"mysql"` gives MariaDB.
+Secrets the plugins need (`S3_KEY`, `JWT_AUTH_CLIENT_SECRET`, …) go in a
+`.env` file, loaded by `devenv shell`; `configExtra` holds only the
+non-secret constants, shared with the NixOS module. All outgoing mail is
+caught by Mailpit.
+
+The Cloudflare pieces still build from the same flake:
+
+```sh
 nix build .#worker -o .worker    # the edge worker bundle
 nix build .#static-assets -o assets && rm -rf public && cp -rL assets public
 wrangler dev                     # Worker + container + local D1

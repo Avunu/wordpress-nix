@@ -15,4 +15,5 @@ in
 pkgs.fetchzip {
   url = "https://wordpress.org/wordpress-${if version != null then version else pinnedVersion}.zip";
   hash = if hash != null then hash else pinnedHash;
+  passthru.version = if version != null then version else pinnedVersion;
 }

@@ -56,6 +56,36 @@
 		},
 		{
 			"path": "../clan-core"
+		},
+		{
+			"path": "../bench_avunu"
+		},
+		{
+			"path": "../nuget-packageslock2nix"
+		},
+		{
+			"path": "../peachpie-wordpress"
+		},
+		{
+			"path": "../wpdotnet-sdk"
+		},
+		{
+			"path": "../wordpress-moonshot"
+		},
+		{
+			"path": "../turso"
+		},
+		{
+			"path": "../peachpie"
+		},
+		{
+			"path": "../wordpress-sqlite-anywhere"
+		},
+		{
+			"path": "../site-anabaptistperspectives"
+		},
+		{
+			"path": "../index-wp-mysql-for-speed"
 		}
 	],
 	"settings": {}
