@@ -44,7 +44,7 @@
         perSystem = {
           wordpress-nix = {
             enable = true;
-            siteName = "CHANGEME-site-slug";
+            siteName = "changeme-site-slug"; # lowercase, digits, dashes
             siteRoot = ./.;
             # sqlite (no server; `wp-import dump.sql`), turso (local tursodb +
             # embedded replica, as in production) or mysql (MariaDB).
