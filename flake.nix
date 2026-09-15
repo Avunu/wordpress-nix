@@ -129,20 +129,35 @@
           # The bundled site-agnostic edge Worker.
           worker = self.lib.mkSiteWorker { inherit pkgs; };
           # Migration: replay a MySQL dump through the driver into SQLite.
-          mysql-to-sqlite = import ./lib/mysql-to-sqlite.nix {
-            inherit pkgs;
-            php = import ./lib/php.nix {
-              inherit pkgs;
-              php = pkgs.php85;
+          mysql-to-sqlite =
+            let
               # A plain build: this runs once per migration on an operator's
               # machine, so skip the slow clang/LTO pass. pdo_sqlite is not in
               # the platform extension set (the runtime targets D1).
-              optimize = false;
-              extraExtensions = all: [ all.pdo_sqlite ];
+              php = import ./lib/php.nix {
+                inherit pkgs;
+                php = pkgs.php85;
+                optimize = false;
+                extraExtensions = all: [ all.pdo_sqlite ];
+              };
+            in
+            import ./lib/mysql-to-sqlite.nix {
+              inherit pkgs php;
+              # The assembled driver package (upstream + the plugin's patches).
+              driverSrc = "${wordpress-sqlite-anywhere.packages.${system}.driver}/src";
+              # The same Rust parser the site runs on.
+              parserExtension = wordpress-sqlite-anywhere.lib.mkMysqlParserExtension {
+                inherit pkgs php;
+                rustPkgs = nixpkgs.legacyPackages.${system};
+              };
             };
-            # The assembled driver package (upstream + the plugin's patches).
-            driverSrc = "${wordpress-sqlite-anywhere.packages.${system}.driver}/src";
+          # Migration, step zero when a plugin rewrote the core tables' keys.
+          restore-core-keys = import ./lib/restore-core-keys.nix {
+            inherit pkgs;
+            php = pkgs.php85;
           };
+          # Migration, step two: load the SQLite file into a Turso database.
+          sqlite-to-turso = import ./lib/sqlite-to-turso.nix { inherit pkgs; };
           # The Turso snapshot publisher: the front end's read path. A live Turso
           # replica cannot be read by pdo_sqlite, so this hands PHP a plain
           # SQLite file instead. See the package's README.
@@ -173,6 +188,18 @@
           mysql-to-sqlite = import ./tools/test/mysql-to-sqlite-test.nix {
             inherit pkgs;
             converter = self.packages.${system}.mysql-to-sqlite;
+          };
+          # Key restoration on a plugin-mangled dump, then conversion.
+          restore-core-keys = import ./tools/test/restore-core-keys-test.nix {
+            inherit pkgs;
+            restoreCoreKeys = self.packages.${system}.restore-core-keys;
+            converter = self.packages.${system}.mysql-to-sqlite;
+          };
+          # Loader round-trip against a local tursodb sync server.
+          sqlite-to-turso = import ./tools/test/sqlite-to-turso-test.nix {
+            inherit pkgs;
+            converter = self.packages.${system}.mysql-to-sqlite;
+            loader = self.packages.${system}.sqlite-to-turso;
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {

@@ -185,6 +185,56 @@ connection and coordinates its WAL through a file SQLite knows nothing about. Th
 publisher owns the replica and hands PHP a plain file instead. Nothing else may
 touch `database.turso.replicaPath`.
 
+#### Migrating a MySQL site
+
+Three tools, all flake packages, take a `mysqldump` to a populated Turso (or
+D1) database:
+
+```sh
+nix run github:Avunu/wordpress#restore-core-keys -- dump.sql dump-fixed.sql   # only if a plugin rewrote core keys
+nix run github:Avunu/wordpress#mysql-to-sqlite -- dump-fixed.sql site.sqlite
+TURSO_AUTH_TOKEN=... nix run github:Avunu/wordpress#sqlite-to-turso -- site.sqlite libsql://site-org.turso.io
+```
+
+`restore-core-keys` matters when the site ran a plugin such as
+`index-wp-mysql-for-speed`, which rewrites the core tables' keys (`wp_options`
+gets `PRIMARY KEY (option_name)`; the meta tables get composite primary keys).
+The driver keeps the `AUTO_INCREMENT` column as SQLite's primary key and has
+no place for a second one, so `option_name` would lose its uniqueness and
+`INSERT … ON DUPLICATE KEY UPDATE` its safety. The tool replaces the key lines
+of every core table that differs from `wp_get_db_schema()` — taken from the
+platform's pinned core — and reports what it changed; columns are kept as
+dumped, and a table lacking a column the standard keys need is left alone
+with a warning. Run it on every dump: it is a no-op for a standard schema.
+
+`mysql-to-sqlite` replays the dump through the MySQL-on-SQLite driver itself
+(with the same native parser the site runs on — a 130 MB dump takes about a
+minute), so the SQLite file carries the exact schema — and the driver's
+emulated `INFORMATION_SCHEMA`, with MySQL column types intact — that the site
+will use at runtime. It replays under the SQL mode mysqldump sets, so
+`0000-00-00` dates and the rest of what was valid on the source load as they
+were. Triggers, procedures, functions and events are not migrated and are
+reported one by one: WordPress creates none, so **read every one the report
+lists** — a trigger on `wp_comments` that inserts an administrator is a
+well-known backdoor. `sqlite-to-turso` copies that file into the Turso primary over its
+SQL-over-HTTP pipeline: tables, rows (as typed arguments, never SQL text),
+indexes, triggers, views and `AUTOINCREMENT` counters, then verifies every
+table's row count. It refuses a target that already has tables unless you
+pass `--replace` (start over) or `--resume` (finish an interrupted load:
+complete tables are skipped, partial ones reloaded). Gateway errors are
+retried; every request is one transaction, so a retry never duplicates rows.
+The token comes from `TURSO_AUTH_TOKEN` (or `TURSO_AUTH_TOKEN_FILE`); it is
+never taken from the command line.
+
+The tables are created **without `AUTOINCREMENT`** unless you pass
+`--keep-autoincrement`. Turso's engine appends a row to a backing sequence
+table for every `AUTOINCREMENT` row and compacts only at commit, which makes
+a multi-row insert quadratic: 2,000 rows took 23 s against 0.4 s for the same
+table with a plain `INTEGER PRIMARY KEY`, and a real site's load went from
+hours to minutes. Single-row inserts — what WordPress does at runtime — cost
+the same either way. The only semantic difference is that the id of a
+deleted highest row may be reused, which WordPress does not depend on.
+
 ## Containers
 
 The container path is unchanged: WordPress is downloaded at container start

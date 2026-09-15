@@ -12,6 +12,8 @@
  * Statements are split with the project's own MySQL lexer, so semicolons
  * inside string literals, comments, and quoted identifiers never split a
  * statement (a naive split on ";" corrupts real WordPress content).
+ * mysqldump's extended INSERTs (one statement per ~1 MB of rows) are chunked
+ * the same way, so a statement's parse tree never outgrows memory.
  *
  * Usage:
  *   mysql-to-sqlite <dump.sql> <output.sqlite> [--db-name=wordpress]
@@ -117,15 +119,68 @@ function m2s_usage( int $code ): void {
 }
 
 /**
- * Split a MySQL script into individual statements using the driver's lexer.
+ * Split a MySQL script into individual statements.
  *
  * Splitting on the lexer's SEMICOLON tokens (rather than on raw ";") keeps
  * semicolons inside strings, comments, and quoted identifiers intact.
+ * DELIMITER lines are honoured, so a trigger body does not shatter into
+ * fragments.
  *
  * @param  string $sql The script.
  * @return string[] The statements, without trailing semicolons.
  */
 function m2s_split_statements( string $sql ): array {
+	$statements = array();
+	foreach ( m2s_split_delimiter_segments( $sql ) as list( $delimiter, $segment ) ) {
+		if ( ';' === $delimiter ) {
+			$statements = array_merge( $statements, m2s_split_on_semicolons( $segment ) );
+			continue;
+		}
+		// A custom delimiter (mysqldump uses ";;" around triggers, routines
+		// and events, whose bodies contain semicolons). The delimited blocks
+		// are compound statements the driver cannot run; keep each whole so
+		// it is reported as one failure rather than as parsed shrapnel.
+		foreach ( explode( $delimiter, $segment ) as $block ) {
+			$block = trim( $block );
+			if ( '' !== $block ) {
+				$statements[] = $block;
+			}
+		}
+	}
+	return $statements;
+}
+
+/**
+ * Split a script into segments by its DELIMITER lines.
+ *
+ * DELIMITER is a mysql client command, not SQL: it appears alone on a line
+ * and changes the statement terminator for the lines that follow.
+ *
+ * @param  string $sql The script.
+ * @return array<array{0:string,1:string}> Pairs of (delimiter, segment text).
+ */
+function m2s_split_delimiter_segments( string $sql ): array {
+	$segments  = array();
+	$delimiter = ';';
+	$offset    = 0;
+	while ( 1 === preg_match( '/^[ \t]*DELIMITER[ \t]+(\S+)[ \t]*$/mi', $sql, $m, PREG_OFFSET_CAPTURE, $offset ) ) {
+		$line_start = $m[0][1];
+		$line_end   = $line_start + strlen( $m[0][0] );
+		$segments[] = array( $delimiter, substr( $sql, $offset, $line_start - $offset ) );
+		$delimiter  = $m[1][0];
+		$offset     = $line_end;
+	}
+	$segments[] = array( $delimiter, substr( $sql, $offset ) );
+	return $segments;
+}
+
+/**
+ * Split a script whose statements end in ";" using the driver's lexer.
+ *
+ * @param  string $sql The script.
+ * @return string[] The statements, without trailing semicolons.
+ */
+function m2s_split_on_semicolons( string $sql ): array {
 	$lexer      = new WP_MySQL_Lexer( $sql );
 	$statements = array();
 	$start      = 0;
@@ -153,6 +208,113 @@ function m2s_split_statements( string $sql ): array {
 	}
 
 	return $statements;
+}
+
+/**
+ * The number of rows per replayed INSERT.
+ *
+ * mysqldump packs as many rows as fit in net_buffer_length (1 MB by default)
+ * into one INSERT; parsing such a statement builds a tree with a node per
+ * value, which for a wide table can exceed a gigabyte in PHP.
+ */
+const M2S_ROWS_PER_INSERT = 200;
+
+/**
+ * Split an extended INSERT into statements of at most M2S_ROWS_PER_INSERT rows.
+ *
+ * Rows are located with the lexer -- the top-level parenthesised groups after
+ * VALUES -- so parentheses and commas inside string literals are never
+ * mistaken for row boundaries. Anything after the last row (ON DUPLICATE KEY
+ * UPDATE ...) is carried onto every chunk. Statements that are not an
+ * INSERT/REPLACE ... VALUES, or that already fit, are returned as they are.
+ *
+ * @param  string $statement The statement.
+ * @return string[] One or more statements.
+ */
+function m2s_chunk_insert( string $statement ): array {
+	if ( 1 !== preg_match( '/^\s*(?:INSERT|REPLACE)\b/i', $statement ) ) {
+		return array( $statement );
+	}
+
+	$lexer      = new WP_MySQL_Lexer( $statement );
+	$depth      = 0;
+	$values_end = null; // Byte offset just past the VALUES keyword.
+	$rows       = array(); // [start, end) byte ranges of each row group.
+	$row_start  = null;
+	$tail_start = strlen( $statement );
+
+	while ( $lexer->next_token() ) {
+		$token = $lexer->get_token();
+		if ( null === $token || WP_MySQL_Lexer::EOF === $token->id ) {
+			break;
+		}
+		if ( null === $values_end ) {
+			if ( 0 === $depth && ( WP_MySQL_Lexer::VALUES_SYMBOL === $token->id || WP_MySQL_Lexer::VALUE_SYMBOL === $token->id ) ) {
+				$values_end = $token->start + $token->length;
+			} elseif ( WP_MySQL_Lexer::OPEN_PAR_SYMBOL === $token->id ) {
+				++$depth;
+			} elseif ( WP_MySQL_Lexer::CLOSE_PAR_SYMBOL === $token->id ) {
+				--$depth;
+			}
+			continue;
+		}
+		if ( WP_MySQL_Lexer::OPEN_PAR_SYMBOL === $token->id ) {
+			if ( 0 === $depth ) {
+				$row_start = $token->start;
+			}
+			++$depth;
+		} elseif ( WP_MySQL_Lexer::CLOSE_PAR_SYMBOL === $token->id ) {
+			--$depth;
+			if ( 0 === $depth && null !== $row_start ) {
+				$rows[]     = array( $row_start, $token->start + $token->length );
+				$row_start  = null;
+				$tail_start = $token->start + $token->length;
+			}
+		} elseif ( 0 === $depth && WP_MySQL_Lexer::COMMA_SYMBOL !== $token->id ) {
+			// The first token after the row list that is not a separator:
+			// the tail (ON DUPLICATE KEY UPDATE ...) begins here.
+			$tail_start = $token->start;
+			break;
+		}
+	}
+
+	if ( null === $values_end || count( $rows ) <= M2S_ROWS_PER_INSERT ) {
+		return array( $statement );
+	}
+
+	$prefix = substr( $statement, 0, $values_end ) . ' ';
+	$tail   = trim( substr( $statement, $tail_start ) );
+	$tail   = '' === $tail ? '' : ' ' . $tail;
+	$chunks = array();
+	foreach ( array_chunk( $rows, M2S_ROWS_PER_INSERT ) as $group ) {
+		$values = array();
+		foreach ( $group as list( $start, $end ) ) {
+			$values[] = substr( $statement, $start, $end - $start );
+		}
+		$chunks[] = $prefix . implode( ',', $values ) . $tail;
+	}
+	return $chunks;
+}
+
+/**
+ * The kind of stored program a statement creates, if it creates one.
+ *
+ * mysqldump wraps these in conditional comments ("/*!50003 CREATE*\/ ...
+ * TRIGGER ... END *\/"), which would otherwise be skipped silently. A trigger
+ * or routine is server-side logic that SQLite cannot run and that WordPress
+ * never installs itself, so it is reported rather than dropped without a
+ * word -- a trigger on wp_comments that inserts an administrator is a known
+ * malware persistence technique, and the operator must see it.
+ *
+ * @param  string $statement The statement.
+ * @return string|null "TRIGGER", "PROCEDURE", "FUNCTION" or "EVENT", or null.
+ */
+function m2s_stored_program_kind( string $statement ): ?string {
+	$unwrapped = preg_replace( '/\/\*!\d{5}\s?|\*\//', '', $statement );
+	if ( 1 === preg_match( '/^\s*CREATE\s+(?:DEFINER\s*=\s*\S+\s+)?(TRIGGER|PROCEDURE|FUNCTION|EVENT)\b/i', (string) $unwrapped, $m ) ) {
+		return strtoupper( $m[1] );
+	}
+	return null;
 }
 
 /**
@@ -249,6 +411,29 @@ try {
 	fwrite( STDERR, 'error: failed to open the SQLite database: ' . $e->getMessage() . "\n" );
 	exit( 2 );
 }
+/*
+ * WordPress runs the driver with stringified fetches, and the driver is
+ * written for that: it compares information-schema values it reads back as
+ * strings ('0' === NON_UNIQUE), so without this every UNIQUE KEY would be
+ * created as a plain index -- wp_options.option_name included.
+ */
+$driver->setAttribute( PDO::ATTR_STRINGIFY_FETCHES, true );
+
+/*
+ * Replay under the SQL mode mysqldump itself sets at the top of every dump
+ * (the "/*!40101 SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO'" directive, which is
+ * skipped below like every other conditional comment). It is non-strict, so values that were valid on the source load as
+ * they were: WordPress stores '0000-00-00 00:00:00' in post_date_gmt for
+ * drafts, which the driver's strict default mode would reject, and it keeps
+ * an explicit 0 in an AUTO_INCREMENT column from being replaced by the next
+ * sequence value. WordPress relaxes the same strict modes at runtime.
+ */
+try {
+	$driver->query( "SET SESSION sql_mode = 'NO_AUTO_VALUE_ON_ZERO'" );
+} catch ( Throwable $e ) {
+	fwrite( STDERR, 'error: failed to set the SQL mode: ' . $e->getMessage() . "\n" );
+	exit( 2 );
+}
 
 $executed = 0;
 $skipped  = 0;
@@ -257,13 +442,19 @@ $errors   = array();
 $total    = count( $statements );
 
 foreach ( $statements as $index => $statement ) {
-	if ( m2s_should_skip( $statement ) ) {
+	$program = m2s_stored_program_kind( $statement );
+	if ( null === $program && m2s_should_skip( $statement ) ) {
 		++$skipped;
 		continue;
 	}
 
 	try {
-		$driver->query( $statement );
+		if ( null !== $program ) {
+			throw new RuntimeException( "CREATE {$program} is not supported: stored programs are not migrated. Review it -- WordPress does not create any." );
+		}
+		foreach ( m2s_chunk_insert( $statement ) as $chunk ) {
+			$driver->query( $chunk );
+		}
 		++$executed;
 	} catch ( Throwable $e ) {
 		++$failed;
