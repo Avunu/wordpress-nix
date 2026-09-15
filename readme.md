@@ -19,6 +19,10 @@ Both paths share the same optimized ZTS PHP build (`lib/php.nix`) and FrankenPHP
     admin manages core/plugins/themes via the UI).
   * **git** — a read-only document root pulled from a flake input (source-managed).
 * Automated container builds and pushes to ghcr.io.
+* Platform mu-plugins (`mu-plugins/platform-*.php`, refreshed on every deploy): edge page-cache
+  signalling, a 60-day nonce lifetime, and user-enumeration hardening (403 on `?author=<id>`
+  probes, the users REST routes require authentication, no users sitemap, no oEmbed author URL)
+  — so sites need no plugin for it, and none of that plugin's per-request writes.
 
 ## Repo layout
 
