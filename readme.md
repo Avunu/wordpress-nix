@@ -19,6 +19,13 @@ Both paths share the same optimized ZTS PHP build (`lib/php.nix`) and FrankenPHP
     admin manages core/plugins/themes via the UI).
   * **git** — a read-only document root pulled from a flake input (source-managed).
 * Automated container builds and pushes to ghcr.io.
+* Performance keys for the SQLite-backed engines (`mu-plugins/platform-performance-keys.php`):
+  the composite keys index-wp-mysql-for-speed added on MySQL — `(meta_key, object_id)` on the
+  four meta tables, `(post_parent, post_type, post_status)` and `(post_author, post_type,
+  post_status, post_date)` on posts — added once through the driver (`ALTER TABLE … ADD KEY`,
+  so the driver's schema knows them), on the admin plane, and only on a driver that creates
+  indexes in place (wordpress-sqlite-anywhere ≥ 1.2). A front-page `meta_query` on the first
+  migrated site went from 600 ms to 77 ms.
 
 ## Repo layout
 
