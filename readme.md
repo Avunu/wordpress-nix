@@ -26,6 +26,10 @@ Both paths share the same optimized ZTS PHP build (`lib/php.nix`) and FrankenPHP
   so the driver's schema knows them), on the admin plane, and only on a driver that creates
   indexes in place (wordpress-sqlite-anywhere ≥ 1.2). A front-page `meta_query` on the first
   migrated site went from 600 ms to 77 ms.
+* Platform mu-plugins (`mu-plugins/platform-*.php`, refreshed on every deploy): edge page-cache
+  signalling, a 60-day nonce lifetime, and user-enumeration hardening (403 on `?author=<id>`
+  probes, the users REST routes require authentication, no users sitemap, no oEmbed author URL)
+  — so sites need no plugin for it, and none of that plugin's per-request writes.
 
 ## Repo layout
 
