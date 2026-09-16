@@ -382,11 +382,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1789006805,
-        "narHash": "sha256-xB8mKMOx1IA9vTDNLmJZ6n4wCMq/cuWBBOzGCRnqxrU=",
+        "lastModified": 1789426278,
+        "narHash": "sha256-GnotcvKtbTMnoVx6G4E7ZdUX6487Dky74dqq3pU7iRk=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "8ce4ef6cb6f871616146b9fe26d2a5ae594e94fe",
+        "rev": "efe6f071ede9d21c37462d2d6682d5e670099684",
         "type": "github"
       },
       "original": {
@@ -488,11 +488,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789403225,
-        "narHash": "sha256-COPsPEyKDCr9vtbi5S4y7oIl5hK81z5A+YCu8lCpWh4=",
+        "lastModified": 1789567411,
+        "narHash": "sha256-iAB6OGYdGRzIJhMYzA6/8hRf4DYdHXwgSJMUOP58q70=",
         "ref": "main",
-        "rev": "1a748458dfa1bf3fb137432dc9b986b6da82bdfc",
-        "revCount": 42,
+        "rev": "3f3632580d796ee8bef797d06f69d5b32936e9c1",
+        "revCount": 50,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/Avunu/wordpress-sqlite-anywhere"
