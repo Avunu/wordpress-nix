@@ -280,6 +280,14 @@ Mailpit catching all mail. The same options build `packages.image`, `static-asse
 | `turso` | a local `tursodb --sync-server` (or `database.turso.url`, token from `WP_TURSO_TOKEN`), read through the embedded replica as in production; `wp` talks to the primary |
 | `mysql` | devenv's MariaDB |
 
+Security, anti-spam and remote-management plugins have no environment switch of their
+own (Patchstack's firewall is gated on options and its ban check runs regardless;
+CleanTalk's `APBCT_IS_LOCALHOST` only tweaks spam scans), so `productionOnlyPlugins`
+(default: patchstack, cleantalk-spam-protect, wordfence, sucuri-scanner, mainwp-child)
+are filtered out of `active_plugins` by a platform mu-plugin whenever
+`WP_ENVIRONMENT_TYPE` is not `production` — the database is untouched, wp-admin says
+which are held back.
+
 `nix flake init -t github:Avunu/wordpress#site` scaffolds a site repo with this flake.
 
 ## Containers

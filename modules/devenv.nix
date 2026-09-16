@@ -102,6 +102,25 @@ in
           };
         };
 
+        productionOnlyPlugins = mkOption {
+          type = types.listOf types.str;
+          default = [
+            "patchstack"
+            "cleantalk-spam-protect"
+            "wordfence"
+            "sucuri-scanner"
+            "mainwp-child"
+          ];
+          description = ''
+            Plugin directories that stay inactive in the dev shell, without
+            changing the database: security, anti-spam and remote-management
+            plugins have no environment switch of their own and only cost
+            time (and per-request writes) here. Applied by the platform's
+            environment mu-plugin whenever WP_ENVIRONMENT_TYPE is not
+            "production"; wp-admin says which ones are held back.
+          '';
+        };
+
         configExtra = mkOption {
           type = types.lines;
           default = "";
@@ -275,6 +294,7 @@ in
           define('AUTOMATIC_UPDATER_DISABLED', true);
           define('WP_AUTO_UPDATE_CORE', false);
           define('WP_ENVIRONMENT_TYPE', 'development');
+          define('WP_PLATFORM_PRODUCTION_ONLY_PLUGINS', '${lib.concatStringsSep "," cfg.productionOnlyPlugins}');
 
           // --- site configuration (wordpress-nix.configExtra) ---
           ${cfg.configExtra}
