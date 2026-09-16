@@ -105,19 +105,28 @@ in
         productionOnlyPlugins = mkOption {
           type = types.listOf types.str;
           default = [
+            # Security, anti-spam, remote management: no environment switch of
+            # their own; time and per-request writes for nothing here.
             "patchstack"
             "cleantalk-spam-protect"
             "wordfence"
             "sucuri-scanner"
             "mainwp-child"
+            # CAPTCHA gates: a widget bound to the production domain can never
+            # validate on 127.0.0.1, which locks the login form.
+            "simple-cloudflare-turnstile"
+            "advanced-google-recaptcha"
+            "hcaptcha-for-forms-and-more"
           ];
           description = ''
             Plugin directories that stay inactive in the dev shell, without
-            changing the database: security, anti-spam and remote-management
-            plugins have no environment switch of their own and only cost
-            time (and per-request writes) here. Applied by the platform's
-            environment mu-plugin whenever WP_ENVIRONMENT_TYPE is not
-            "production"; wp-admin says which ones are held back.
+            changing the database: security, anti-spam, remote-management
+            and CAPTCHA plugins have no environment switch of their own and
+            only cost time (and per-request writes) here -- or, for a
+            CAPTCHA bound to the production domain, lock the login form.
+            Applied by the platform's environment mu-plugin whenever
+            WP_ENVIRONMENT_TYPE is not "production"; wp-admin says which
+            ones are held back.
           '';
         };
 
