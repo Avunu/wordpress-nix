@@ -112,9 +112,11 @@ in
             "wordfence"
             "sucuri-scanner"
             "mainwp-child"
-            # CAPTCHA gates: a widget bound to the production domain can never
-            # validate on 127.0.0.1, which locks the login form.
-            "simple-cloudflare-turnstile"
+            # CAPTCHA gates whose keys live in the database: a widget bound to
+            # the production domain can never validate on 127.0.0.1, which
+            # locks the login form. (Turnstile is not here: its plugin honours
+            # the CF_TURNSTILE_* constants, so the generated wp-config gives
+            # it Cloudflare's always-pass testing keys instead.)
             "advanced-google-recaptcha"
             "hcaptcha-for-forms-and-more"
           ];
@@ -304,6 +306,16 @@ in
           define('WP_AUTO_UPDATE_CORE', false);
           define('WP_ENVIRONMENT_TYPE', 'development');
           define('WP_PLATFORM_PRODUCTION_ONLY_PLUGINS', '${lib.concatStringsSep "," cfg.productionOnlyPlugins}');
+
+          // Plugins that do have a development posture of their own.
+          // Cloudflare Turnstile's published testing keys: the widget renders
+          // and every challenge passes. Simple Cloudflare Turnstile reads
+          // these constants ahead of its saved keys.
+          define('CF_TURNSTILE_SITE_KEY', '1x00000000000000000000AA');
+          define('CF_TURNSTILE_SECRET_KEY', '1x0000000000000000000000000000000AA');
+          // CleanTalk's localhost posture (spam scans off), for a site that
+          // keeps it out of productionOnlyPlugins.
+          define('APBCT_IS_LOCALHOST', true);
 
           // --- site configuration (wordpress-nix.configExtra) ---
           ${cfg.configExtra}

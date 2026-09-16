@@ -284,11 +284,14 @@ Security, anti-spam and remote-management plugins have no environment switch of 
 own (Patchstack's firewall is gated on options and its ban check runs regardless;
 CleanTalk's `APBCT_IS_LOCALHOST` only tweaks spam scans), so `productionOnlyPlugins`
 (default: patchstack, cleantalk-spam-protect, wordfence, sucuri-scanner, mainwp-child, and
-the CAPTCHA gates simple-cloudflare-turnstile, advanced-google-recaptcha,
-hcaptcha-for-forms-and-more — a widget bound to the production domain can never validate
-on 127.0.0.1, which locks the login form) are filtered out of `active_plugins` by a
-platform mu-plugin whenever `WP_ENVIRONMENT_TYPE` is not `production` — the database is
-untouched, wp-admin says which are held back.
+the CAPTCHA gates advanced-google-recaptcha and hcaptcha-for-forms-and-more — a widget
+bound to the production domain can never validate on 127.0.0.1, which locks the login
+form) are filtered out of `active_plugins` by a platform mu-plugin whenever
+`WP_ENVIRONMENT_TYPE` is not `production` — the database is untouched, wp-admin says which
+are held back. Plugins with a development posture of their own get it instead: the
+generated wp-config gives Simple Cloudflare Turnstile Cloudflare's always-pass testing
+keys (`CF_TURNSTILE_*`), so the widget stays and every challenge passes, and sets
+CleanTalk's `APBCT_IS_LOCALHOST`.
 
 `nix flake init -t github:Avunu/wordpress#site` scaffolds a site repo with this flake.
 
