@@ -283,10 +283,12 @@ Mailpit catching all mail. The same options build `packages.image`, `static-asse
 Security, anti-spam and remote-management plugins have no environment switch of their
 own (Patchstack's firewall is gated on options and its ban check runs regardless;
 CleanTalk's `APBCT_IS_LOCALHOST` only tweaks spam scans), so `productionOnlyPlugins`
-(default: patchstack, cleantalk-spam-protect, wordfence, sucuri-scanner, mainwp-child)
-are filtered out of `active_plugins` by a platform mu-plugin whenever
-`WP_ENVIRONMENT_TYPE` is not `production` — the database is untouched, wp-admin says
-which are held back.
+(default: patchstack, cleantalk-spam-protect, wordfence, sucuri-scanner, mainwp-child, and
+the CAPTCHA gates simple-cloudflare-turnstile, advanced-google-recaptcha,
+hcaptcha-for-forms-and-more — a widget bound to the production domain can never validate
+on 127.0.0.1, which locks the login form) are filtered out of `active_plugins` by a
+platform mu-plugin whenever `WP_ENVIRONMENT_TYPE` is not `production` — the database is
+untouched, wp-admin says which are held back.
 
 `nix flake init -t github:Avunu/wordpress#site` scaffolds a site repo with this flake.
 
