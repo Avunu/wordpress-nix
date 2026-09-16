@@ -132,6 +132,26 @@ in
           '';
         };
 
+        environmentConstants = mkOption {
+          type = types.listOf (types.strMatching "^[A-Z][A-Z0-9_]*$");
+          default = [
+            "JWT_AUTH_CLIENT_SECRET"
+            "CLOUDFLARE_EMAIL_ACCOUNT_ID"
+            "CLOUDFLARE_EMAIL_API_TOKEN"
+            "S3_KEY"
+            "S3_SECRET"
+          ];
+          description = ''
+            wp-config constants defined from the environment variable of the
+            same name, when it is set: the secrets `configExtra` must not
+            carry. Put them in `.env` (gitignored; the template's `.envrc`
+            loads it with direnv's dotenv_if_exists, and `devenv shell` loads
+            it itself). Unset variables define nothing, so a plugin sees the
+            same "not configured" it would on a fresh install -- the house
+            plugins each have a development posture for that.
+          '';
+        };
+
         configExtra = mkOption {
           type = types.lines;
           default = "";
@@ -316,6 +336,15 @@ in
           // CleanTalk's localhost posture (spam scans off), for a site that
           // keeps it out of productionOnlyPlugins.
           define('APBCT_IS_LOCALHOST', true);
+
+          // --- secrets, from the environment (wordpress-nix.environmentConstants) ---
+          foreach (${
+            "[" + lib.concatMapStringsSep ", " (c: "'${c}'") cfg.environmentConstants + "]"
+          } as $constant) {
+            if (!defined($constant) && getenv($constant) !== false && getenv($constant) !== ''') {
+              define($constant, getenv($constant));
+            }
+          }
 
           // --- site configuration (wordpress-nix.configExtra) ---
           ${cfg.configExtra}

@@ -293,6 +293,12 @@ generated wp-config gives Simple Cloudflare Turnstile Cloudflare's always-pass t
 keys (`CF_TURNSTILE_*`), so the widget stays and every challenge passes, and sets
 CleanTalk's `APBCT_IS_LOCALHOST`.
 
+Secrets never sit in `configExtra`. `environmentConstants` (default: the house plugins'
+`JWT_AUTH_CLIENT_SECRET`, `CLOUDFLARE_EMAIL_ACCOUNT_ID`/`_API_TOKEN`, `S3_KEY`/`S3_SECRET`)
+are defined into wp-config from environment variables of the same name when set — from a
+gitignored `.env` the template's `.envrc` loads. They are optional: mail is caught by
+Mailpit and media renders read-only from `S3_PUBLIC_URL` without them.
+
 `nix flake init -t github:Avunu/wordpress#site` scaffolds a site repo with this flake.
 
 ## Containers
