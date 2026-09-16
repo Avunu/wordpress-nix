@@ -43,10 +43,12 @@ The port is hashed from `siteName`, so every clone gets the same one. The
 database is a SQLite file under `.devenv/state/` by default (no server);
 `database.type = "turso"` runs a local `tursodb` and reads through the
 embedded replica exactly as production does, and `"mysql"` gives MariaDB.
-Secrets the plugins need (`S3_KEY`, `JWT_AUTH_CLIENT_SECRET`, …) go in a
-`.env` file, loaded by `devenv shell`; `configExtra` holds only the
-non-secret constants, shared with the NixOS module. All outgoing mail is
-caught by Mailpit.
+`configExtra` holds only the non-secret constants, shared with the NixOS
+module. Secrets are optional in the dev shell — mail is caught by Mailpit and
+media is served read-only from `S3_PUBLIC_URL` — but any you do want (`S3_KEY`
+and `S3_SECRET` to upload, `JWT_AUTH_CLIENT_SECRET` to exercise the provider)
+go in a gitignored `.env`, which `.envrc` loads and
+`wordpress-nix.environmentConstants` defines into wp-config.php.
 
 The Cloudflare pieces still build from the same flake:
 

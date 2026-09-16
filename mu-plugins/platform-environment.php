@@ -72,9 +72,9 @@ add_action(
 			return;
 		}
 		printf(
-			'<div class="notice notice-info"><p>%s <code>%s</code></p></div>',
+			'<div class="notice notice-info"><p>%s %s</p></div>',
 			esc_html( sprintf( 'This is a %s environment; production-only plugins are not loaded:', wp_get_environment_type() ) ),
-			esc_html( implode( '</code>, <code>', $disabled ) ) // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped per item, tags are ours.
+			implode( ', ', array_map( static fn( string $plugin ): string => '<code>' . esc_html( $plugin ) . '</code>', $disabled ) ) // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped per item, tags are ours.
 		);
 	}
 );
