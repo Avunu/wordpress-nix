@@ -86,6 +86,9 @@
 		},
 		{
 			"path": "../index-wp-mysql-for-speed"
+		},
+		{
+			"path": "../site-littlecocalico"
 		}
 	],
 	"settings": {}
