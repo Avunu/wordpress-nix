@@ -416,6 +416,20 @@ in
           fi
         '';
 
+        # Refuse to start a server on a port something already listens on.
+        # Caddy and tursodb both bind with SO_REUSEPORT, so a second instance
+        # would otherwise start silently and share the port with the first --
+        # two tursodb processes writing one primary.db is how the first site's
+        # local database was corrupted. (`devenv up` cannot stop a detached
+        # instance whose socket file is stale; wp-stop can.)
+        portGuard = pkgs.writeShellScript "wp-dev-port-guard" ''
+          port=$1; what=$2
+          if ${pkgs.iproute2}/bin/ss -ltn 2>/dev/null | ${pkgs.gawk}/bin/awk '{print $4}' | ${pkgs.gnugrep}/bin/grep -q ":$port$"; then
+            echo "$what: port $port is already in use -- an earlier instance is still running. Run wp-stop (or kill it) first." >&2
+            exit 1
+          fi
+        '';
+
         migrationTools = [
           (import ../lib/mysql-to-sqlite.nix {
             inherit pkgs php;
@@ -460,7 +474,7 @@ in
                   ''
                     TURSO_AUTH_TOKEN="''${WP_TURSO_TOKEN:-}" sqlite-to-turso "$sqlite" "${tursoUrl}" --replace
                     rm -f "$WP_DEV_STATE/turso/replica.db"*
-                    echo "wp-import: loaded into ${tursoUrl}; restart 'devenv up' so the replica re-bootstraps"
+                    echo "wp-import: loaded into ${tursoUrl}; wp-stop and start again so the replica re-bootstraps"
                   ''
                 else
                   ''
@@ -483,6 +497,20 @@ in
                 wp user create "$user" "$user@example.invalid" --role=administrator --user_pass="$pass" > /dev/null
               fi
               echo "administrator: $user / $pass  ->  $WP_DEV_URL/wp-login.php"
+            '';
+          };
+          wp-stop = {
+            description = "Stop the processes started by `devenv up -D`";
+            exec = ''
+              sock="$DEVENV_RUNTIME/pc.sock"
+              if [ -S "$sock" ] && ${pkgs.process-compose}/bin/process-compose down -u "$sock" > /dev/null 2>&1; then
+                echo "wp-stop: stopped"
+              else
+                # A dead server leaves its socket behind, and `devenv up` would
+                # then "attach" to it and start nothing.
+                rm -f "$sock"
+                echo "wp-stop: nothing running (stale socket removed, if any)"
+              fi
             '';
           };
           wp-reset = {
@@ -569,6 +597,7 @@ in
             processes = {
               frankenphp = {
                 exec = ''
+                  ${portGuard} ${toString httpPort} frankenphp
                   ${assemble}
                   ${lib.optionalString (cfg.database.type == "turso" && cfg.database.turso.embedded) ''
                     export WP_TURSO_REPLICA="$WP_DEV_STATE/turso/replica.db"
@@ -583,6 +612,7 @@ in
             }
             // lib.optionalAttrs localTurso {
               tursodb.exec = ''
+                ${portGuard} ${toString tursoPort} tursodb
                 mkdir -p "$WP_DEV_STATE/turso"
                 exec ${pkgs.turso}/bin/tursodb "$WP_DEV_STATE/turso/primary.db" --sync-server 127.0.0.1:${toString tursoPort}
               '';
@@ -608,6 +638,7 @@ in
                   ++ lib.optional cfg.mailpit.enable "mailpit"
                 )
               }  →  $WP_DEV_URL"
+              echo "  devenv up -D     the same, detached; wp-stop stops it"
               echo "  wp-import        load a MySQL dump or SQLite file"
               echo "  wp-admin-user    create a local administrator"
               echo "  wp               wp-cli against the dev site"
