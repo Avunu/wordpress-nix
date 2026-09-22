@@ -317,6 +317,13 @@ in
 
           require getenv('WP_DEV_STATE') . '/wp-salts.php';
 
+          // The docroot is seeded from the Nix store (see assemble in
+          // devenv.nix) but then owned and written by the dev user like any
+          // other host; forcing 'direct' skips get_filesystem_method()'s
+          // getmyuid()-vs-fileowner() probe entirely rather than depending on
+          // it. Same fix as the NixOS module.
+          define('FS_METHOD', 'direct');
+
           define('WP_DEBUG', true);
           define('WP_DEBUG_LOG', getenv('WP_DEV_STATE') . '/debug.log');
           define('WP_DEBUG_DISPLAY', false);
@@ -355,16 +362,11 @@ in
           require_once ABSPATH . 'wp-settings.php';
         '';
 
-        # The pinned core with wp-config.php at its root; the docroot symlinks
-        # every core entry into it (see wpConfig above).
+        # The pinned core, fetched read-only into the store; assemble copies it
+        # into the docroot once (see below) rather than symlinking it in, so
+        # wp-admin and wp-cli can install and update core and plugins like a
+        # normal host would.
         wordpressCore = import ../lib/wordpress-core.nix { inherit pkgs; };
-        devCore = pkgs.runCommandLocal "wordpress-dev-core" { } ''
-          mkdir $out
-          cp -rL ${wordpressCore}/. $out/
-          chmod -R u+w $out
-          rm -rf $out/wp-content $out/wp-config-sample.php
-          cp ${wpConfig} $out/wp-config.php
-        '';
 
         caddyfile = pkgs.writeText "Caddyfile" ''
           {
@@ -384,16 +386,24 @@ in
 
         muPluginDirs = lib.concatMapStringsSep " " toString cfg.muPlugins;
 
-        # Assembles the docroot: core symlinks, wp-content from the checkout,
-        # the drop-in and platform mu-plugins (both gitignored by the site).
+        # Assembles the docroot: the pinned core (seeded once, then left alone
+        # so self-updates persist), wp-content from the checkout, the drop-in
+        # and platform mu-plugins (both gitignored by the site).
         assemble = pkgs.writeShellScript "wp-dev-assemble" ''
           set -euo pipefail
           mkdir -p "$WP_DEV_STATE/database" "$WP_DEV_STATE/turso" "$WP_DOCROOT"
-          for entry in ${devCore}/*; do
-            ln -sfn "$entry" "$WP_DOCROOT/$(basename "$entry")"
-          done
-          # Stale symlinks from an older core.
-          find "$WP_DOCROOT" -maxdepth 1 -xtype l -delete
+          # Seed core once, as real writable files owned by the dev user --
+          # not symlinks into the read-only, root-owned Nix store. Once
+          # seeded this is the running site's own state, exactly like a
+          # normal host: wp-admin and wp-cli can update it from here, and
+          # assemble never overwrites it again. wp-core-reset re-pins it
+          # deliberately.
+          if [ ! -e "$WP_DOCROOT/wp-includes/version.php" ]; then
+            cp -rL ${wordpressCore}/. "$WP_DOCROOT/"
+            chmod -R u+w "$WP_DOCROOT"
+            rm -rf "$WP_DOCROOT/wp-content" "$WP_DOCROOT/wp-config-sample.php"
+          fi
+          install -m 0644 ${wpConfig} "$WP_DOCROOT/wp-config.php"
           ln -sfn "$WP_CONTENT_DIR" "$WP_DOCROOT/wp-content"
           mkdir -p "$WP_CONTENT_DIR/mu-plugins" "$WP_CONTENT_DIR/uploads"
           ${lib.optionalString remoteSqlite ''
@@ -521,6 +531,19 @@ in
               echo "wp-reset: database state removed; run wp-import, or open $WP_DEV_URL to install"
             '';
           };
+          wp-core-reset = {
+            description = "Re-seed WordPress core from the platform's pinned version (keeps wp-content and the database)";
+            exec = ''
+              set -euo pipefail
+              # The docroot only holds core plus a symlink back to
+              # $WP_CONTENT_DIR (the real, persistent wp-content); assemble
+              # recreates that symlink unconditionally, so wiping the whole
+              # thing loses nothing.
+              rm -rf "$WP_DOCROOT"
+              ${assemble}
+              echo "wp-core-reset: core reseeded at ${wordpressCore.version}; restart with wp-stop then devenv up"
+            '';
+          };
         };
       in
       lib.mkIf cfg.enable {
@@ -629,7 +652,7 @@ in
             enterShell = ''
               ${assemble}
               echo ""
-              echo "  ${cfg.siteName} — WordPress ${wordpressCore.version} on ${cfg.database.type}  (wordpress-nix)"
+              echo "  ${cfg.siteName} — WordPress on ${cfg.database.type}, seeded from core ${wordpressCore.version}  (wordpress-nix)"
               echo "  devenv up        start ${
                 lib.concatStringsSep " + " (
                   [ "frankenphp" ]
@@ -641,6 +664,7 @@ in
               echo "  devenv up -D     the same, detached; wp-stop stops it"
               echo "  wp-import        load a MySQL dump or SQLite file"
               echo "  wp-admin-user    create a local administrator"
+              echo "  wp-core-reset    re-seed core from the pinned version"
               echo "  wp               wp-cli against the dev site"
               ${lib.optionalString cfg.mailpit.enable ''
                 echo "  mail             all outgoing mail → http://127.0.0.1:${toString mailpitHttpPort}"
