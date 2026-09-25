@@ -79,11 +79,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1789480904,
-        "narHash": "sha256-anHWHTkxI7423/eUroN9Rc4+H8VIGyIUWq/hV1egBDQ=",
+        "lastModified": 1789991752,
+        "narHash": "sha256-SiH+H00IutELZBg7BBNo6r5DU6E+DG7DjrbeX5+QLa0=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "0fd5e6d3a9b2ae6f10205a3e95e0ca58d526c5a6",
+        "rev": "1c57b5dea0d400af97053fdd1a536fca17378f73",
         "type": "github"
       },
       "original": {
@@ -382,11 +382,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1789426278,
-        "narHash": "sha256-GnotcvKtbTMnoVx6G4E7ZdUX6487Dky74dqq3pU7iRk=",
+        "lastModified": 1789921291,
+        "narHash": "sha256-Ft/BRnIqw1MywFoXydKobjjWmDFgDdYtSpJliE8+yUw=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "efe6f071ede9d21c37462d2d6682d5e670099684",
+        "rev": "44a91898084f46797b5fac650c7e8c9ac38c43d4",
         "type": "github"
       },
       "original": {
@@ -488,11 +488,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789572412,
-        "narHash": "sha256-+sgzrmUKrm1TTtsIu4YLwOge1wfi+p0XzXcc4e+FlRQ=",
+        "lastModified": 1790010136,
+        "narHash": "sha256-TKuKhsjD8jsNuo55XIARwTdzyjb1KrYNzukRfSYft00=",
         "ref": "main",
-        "rev": "31272802cd20d8cdfab6342883f43812f76ae9d5",
-        "revCount": 51,
+        "rev": "292baec9cac9aa84a818b22a3382fe1e9aa3bfa4",
+        "revCount": 57,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/Avunu/wordpress-sqlite-anywhere"
