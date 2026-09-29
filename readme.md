@@ -41,6 +41,7 @@ modules/nixos.nix         # services.wordpress-nix
 modules/containers.nix    # OCI image build (reuses lib/)
 conf/{php.ini,Caddyfile,wp-config.php}
 tests/module.nix          # NixOS VM test
+tests/logging.nix         # logging contract check (no VM)
 ```
 
 ## NixOS module
@@ -241,6 +242,37 @@ table with a plain `INTEGER PRIMARY KEY`, and a real site's load went from
 hours to minutes. Single-row inserts — what WordPress does at runtime — cost
 the same either way. The only semantic difference is that the id of a
 deleted highest row may be reused, which WordPress does not depend on.
+
+### Logging
+
+Everything goes to journald, so one collector can ship it. Every unit the module
+defines — and the local `mysql` it enables — carries two extra journald fields,
+shared with frappe-nix and odoo-nix:
+
+| Unit | `SYSLOG_IDENTIFIER` | `APP_SERVICE` |
+|---|---|---|
+| `wordpress` (FrankenPHP) | `wordpress` | `web` |
+| `wordpress-init` | `wordpress-init` | `init` |
+| `wordpress-cron` | `wordpress-cron` | `cron` |
+| `wordpress-turso-publisher` | `wordpress-turso-publisher` | `publisher` |
+| `mysql` (local DB only) | `mysql` | `db` |
+
+`APP_SITE` is `logging.site`: the `domain`, or `wordpress` when none is set.
+
+```sh
+journalctl APP_SITE=blog.example.com APP_SERVICE=web -o json
+```
+
+* Caddy and FrankenPHP log JSON lines to stderr, each with a `level`.
+* `logging.accessLog` (on by default) adds one JSON line per request, from
+  Caddy's `http.log.access` logger. Caddy redacts `Cookie` and `Authorization`
+  in it. Responses with a 5xx status are logged at `error` level.
+* PHP errors and `error_log()` calls go through FrankenPHP into the same JSON
+  logger, at a level mapped from their severity. The module unsets `error_log`,
+  which `conf/php.ini` points at `/dev/stderr` for the OCI image;
+  `phpIniExtra` can still set it. wp-cli, under `wordpress-cron` and
+  `wordpress-init`, writes its errors to stderr as plain text.
+* `WP_DEBUG_LOG` stays unset, so WordPress writes no `debug.log`.
 
 ## Developing a site
 

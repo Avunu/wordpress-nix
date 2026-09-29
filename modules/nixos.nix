@@ -82,8 +82,15 @@ let
     inherit pkgs;
     php = cfg.php;
     optimize = cfg.phpOptimize;
+    # conf/php.ini's `error_log = /dev/stderr` is for the OCI image. Under
+    # systemd, fd 2 is a journald socket and open(2) on it fails (ENXIO), so
+    # PHP would reach the SAPI logger only by accident. Unset it outright (PHP
+    # reads an empty value as NULL): FrankenPHP then hands each error to Caddy's
+    # JSON logger at a level mapped from its severity, and wp-cli writes it to
+    # stderr. Placed before phpIniExtra, which may override it.
     # display_errors leaks paths to visitors; keep it off unless debugging.
-    iniExtra = cfg.phpIniExtra + optionalString (!cfg.debug) "\ndisplay_errors = Off\n";
+    iniExtra =
+      "error_log =\n" + cfg.phpIniExtra + optionalString (!cfg.debug) "\ndisplay_errors = Off\n";
   };
   frankenphp = import ../lib/frankenphp.nix { inherit pkgs php; };
   wpCli = pkgs.wp-cli.override { inherit php; };
@@ -224,9 +231,36 @@ let
     }
   '';
 
+  # journald fields shared with frappe-nix and odoo-nix: the cluster's log
+  # shipper turns APP_SERVICE and APP_SITE into labels, so keep them exact.
+  logFields = role: identifier: {
+    SyslogIdentifier = identifier;
+    LogExtraFields = [
+      "APP_SERVICE=${role}"
+      "APP_SITE=${cfg.logging.site}"
+    ];
+  };
+
+  # One JSON line per request, from Caddy's http.log.access logger (which
+  # redacts Cookie and Authorization headers by default).
+  accessLogDirective = optionalString cfg.logging.accessLog ''
+    log {
+      output stderr
+      format json
+    }
+  '';
+
+  # The global `log` is Caddy's default logger, which FrankenPHP (and so PHP's
+  # error log) writes through too. Caddy already picks JSON when stderr is not
+  # a terminal; stating it pins the `level` field the collector filters on.
   caddyfile = pkgs.writeText "Caddyfile" ''
     {
       ${optionalString (cfg.domain != "" && cfg.acmeEmail != "") "email ${cfg.acmeEmail}"}
+
+      log {
+        output stderr
+        format json
+      }
 
       frankenphp
 
@@ -249,6 +283,7 @@ let
 
     ${siteAddress} {
       ${bindDirective}
+      ${accessLogDirective}
 
       @static {
         file
@@ -892,6 +927,25 @@ in
       description = "Enable WP_DEBUG and PHP display_errors.";
     };
 
+    logging = {
+      site = mkOption {
+        type = types.str;
+        default = if cfg.domain != "" then cfg.domain else "wordpress";
+        defaultText = lib.literalExpression ''if domain != "" then domain else "wordpress"'';
+        example = "blog.example.com";
+        description = ''
+          Site name stamped on every journald entry this module's units write,
+          as the `APP_SITE` field (`APP_SERVICE` names the unit's role: web,
+          init, cron, publisher, db).
+        '';
+      };
+      accessLog = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Log every HTTP request to journald as one JSON line (Caddy's access log).";
+      };
+    };
+
     muPlugins = mkOption {
       type = types.listOf types.path;
       default = [ ../mu-plugins ];
@@ -1031,7 +1085,8 @@ in
           cfg.database.passwordFile != null
         ) "db_password:${cfg.database.passwordFile}";
         ExecStart = initScript;
-      };
+      }
+      // logFields "init" "wordpress-init";
     };
 
     systemd.services.wordpress = {
@@ -1079,7 +1134,8 @@ in
         NoNewPrivileges = true;
         # NOTE: do NOT set MemoryDenyWriteExecute — opcache JIT needs W^X toggling
         # and would crash FrankenPHP at startup.
-      };
+      }
+      // logFields "web" "wordpress";
     };
 
     # The front end's read path. Turso holds an exclusive lock on a live replica
@@ -1117,7 +1173,8 @@ in
         ProtectHome = true;
         PrivateTmp = true;
         NoNewPrivileges = true;
-      };
+      }
+      // logFields "publisher" "wordpress-turso-publisher";
     };
 
     systemd.services.wordpress-cron = mkIf cfg.cron.enable {
@@ -1140,7 +1197,8 @@ in
         PrivateTmp = true;
         NoNewPrivileges = true;
         ExecStart = "${getExe wpCli} cron event run --all --due-now --path=${docroot}";
-      };
+      }
+      // logFields "cron" "wordpress-cron";
     };
 
     systemd.timers.wordpress-cron = mkIf cfg.cron.enable {
@@ -1169,6 +1227,8 @@ in
         collation-server = "utf8mb4_unicode_ci";
       };
     };
+    # The upstream unit, tagged like this module's own.
+    systemd.services.mysql.serviceConfig = mkIf dbLocal (logFields "db" "mysql");
 
     # Socket mode binds no port, so there is nothing to open.
     networking.firewall = mkIf (cfg.openFirewall && !viaSocket) {
@@ -1177,5 +1237,8 @@ in
     };
 
     environment.systemPackages = [ wpWrapper ];
+
+    # The generated Caddyfile, for inspection and the flake's logging check.
+    system.build.wordpressCaddyfile = caddyfile;
   };
 }
