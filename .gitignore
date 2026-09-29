@@ -1,7 +1,8 @@
 .env-github
 .env-private
-result
-result*
+*.code-workspace
 /wordpress
 /wordpress*
 /wordpress/*
+result
+result*
