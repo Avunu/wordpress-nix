@@ -53,6 +53,7 @@ pkgs.testers.runNixOSTest {
           source.type = "state";
           database.createLocally = true;
         };
+        environment.systemPackages = [ pkgs.jq ];
         # Seed core offline (stand-in for `wp core download`), plus a theme.
         # pkgs.wordpress ships wp-content/themes containing only index.php —
         # nixpkgs packages themes separately — and an installed site with no
@@ -142,6 +143,31 @@ pkgs.testers.runNixOSTest {
     state.succeed("curl -sS http://localhost/ -o /tmp/installed.html")
     state.succeed("grep -q StateSite /tmp/installed.html")
     state.succeed("grep -q '</html>' /tmp/installed.html")
+
+    # ---- logging: journald fields, JSON access log, PHP errors via Caddy ----
+    def journal_has(unit, jq_filter):
+        state.wait_until_succeeds(f"journalctl -u {unit} -o json | jq -e -s '{jq_filter}' >/dev/null")
+
+    for unit, role in [("wordpress", "web"), ("wordpress-init", "init"), ("mysql", "db")]:
+        journal_has(unit, f'any(.[]; .APP_SERVICE == "{role}" and .APP_SITE == "wordpress")')
+    journal_has("wordpress", 'any(.[]; .SYSLOG_IDENTIFIER == "wordpress")')
+    # every request is one JSON line from Caddy's access logger
+    journal_has(
+        "wordpress",
+        'any(.[]; .MESSAGE | fromjson? | .logger // "" | startswith("http.log.access"))',
+    )
+    # error_log is unset under systemd, so PHP errors take the SAPI logger:
+    # FrankenPHP writes them through Caddy's JSON logger, with a level
+    state.succeed(
+        "install -o wordpress -g wordpress -m 0644 /dev/stdin /var/lib/wordpress/www/logtest.php"
+        " <<< '<?php error_log(\"wordpress-nix-logtest\"); var_dump(ini_get(\"error_log\"));'"
+    )
+    state.succeed("curl -sS http://localhost/logtest.php -o /tmp/logtest.txt")
+    state.succeed("grep -qF 'string(0) \"\"' /tmp/logtest.txt")
+    journal_has(
+        "wordpress",
+        'any(.[]; .APP_SITE == "wordpress" and (.MESSAGE | fromjson? | .logger == "frankenphp" and .msg == "wordpress-nix-logtest" and .level != null))',
+    )
 
     # ---- socket mode ----
     socket.wait_for_unit("wordpress-init.service")

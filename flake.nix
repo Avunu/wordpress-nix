@@ -235,6 +235,12 @@
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # The journald/access-log contract, evaluated and adapted (no VM).
+          logging = import ./tests/logging.nix {
+            inherit pkgs;
+            inherit (nixpkgs.lib) nixosSystem;
+            wordpressModule = self.nixosModules.default;
+          };
           # `nix build .#checks.<system>.module` runs the NixOS VM test (needs KVM).
           module = import ./tests/module.nix {
             inherit pkgs;
