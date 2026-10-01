@@ -9,9 +9,13 @@
 #   * state   — WordPress core lives in a writable ${stateDir}/www, downloaded on
 #               first boot with wp-cli; fully mutable (admin manages core / plugins
 #               / themes via the UI). Best for flexible, server-specific instances.
-#   * git     — source.path (a flake input / store path) IS the read-only document
+#   * git     — source.path (a flake input / store path) is the read-only document
 #               root; ${stateDir}/www is a writable symlink farm into it with the
 #               uploads/cache/upgrade dirs kept real. Sets DISALLOW_FILE_MODS.
+#               The generated wp-config.php is composed INTO a store copy of that
+#               tree (gitCore), because PHP resolves the farm's symlinks and
+#               ABSPATH lands in the store. lib/mk-site-docroot.nix builds the
+#               tree to point here; this is the read-only public plane's mode.
 #   * managed — the split-plane admin backend: core is symlinked from a PINNED
 #               store docroot (lib/wordpress-core.nix — never self-updates), while
 #               wp-content is fully mutable and seeded from the site's git repo
@@ -38,6 +42,10 @@
   # its packages.default is the plugin, its lib builds the native pieces.
   sqliteAnywhere ? null,
   rustNixpkgs ? null,
+  # The gitium plugin directory. Platform infrastructure rather than site
+  # payload: managed mode installs it, so a site repo never carries or commits
+  # it and cannot drift from the platform's pin.
+  gitiumSrc ? null,
 }:
 {
   config,
@@ -61,6 +69,43 @@ let
   cfg = config.services.wordpress-nix;
 
   managed = cfg.source.type == "managed";
+  gitMode = cfg.source.type == "git";
+
+  # Split-plane roles. The public plane serves the site read-only on its real
+  # hostname and never serves an administration surface; the admin plane serves
+  # the full wp-admin on a private hostname behind an identity proxy. Both read
+  # and write one shared database.
+  publicPlane = cfg.plane.role == "public";
+  adminPlane = cfg.plane.role == "admin";
+
+  # WP_SITEURL is where WordPress itself lives (wp-admin, wp-login); WP_HOME is
+  # where the site is. Splitting them on the admin plane is what keeps generated
+  # permalinks and outgoing email pointing at the real site while wp-admin stays
+  # on the private hostname -- core supports the pair natively, and
+  # platform-admin-plane.php repairs the one link that assumes they match
+  # (post preview).
+  planeUrls =
+    if publicPlane then
+      {
+        home = cfg.plane.publicUrl;
+        siteurl = cfg.plane.publicUrl;
+      }
+    else if adminPlane then
+      {
+        home = if cfg.plane.publicUrl != "" then cfg.plane.publicUrl else cfg.plane.adminUrl;
+        siteurl = cfg.plane.adminUrl;
+      }
+    else if cfg.domain != "" then
+      {
+        home = "https://${cfg.domain}";
+        siteurl = "https://${cfg.domain}";
+      }
+    else
+      {
+        home = "";
+        siteurl = "";
+      };
+
   d1 = cfg.database.type == "d1";
   turso = cfg.database.type == "turso";
   # Both remote backends run the MySQL-on-SQLite driver rather than MySQL.
@@ -193,6 +238,48 @@ let
     else
       null;
 
+  # Where wp-cli should look for WordPress.
+  #
+  # In managed mode the generated wp-config.php sits at the root of the pinned
+  # store core rather than in the docroot: PHP resolves __FILE__ through the
+  # docroot's core symlinks, so ABSPATH is that store path and WordPress finds
+  # its config beside it. wp-cli locates WordPress from --path instead, and the
+  # docroot has no wp-config.php at all, so pointing it there fails with
+  # "'wp-config.php' not found" — which silently broke wp-cron on precisely the
+  # plane that owns cron, and every `wp` invocation on an admin plane with it.
+  wpPath =
+    if managed then
+      managedCore
+    else if gitMode then
+      gitSrc
+    else
+      docroot;
+
+  # git mode's document root, composed the same way managed mode's is and for
+  # the same reason.
+  #
+  # The writable docroot is a farm of symlinks into a store tree, and PHP
+  # resolves __FILE__ to the real path — so ABSPATH is that store tree, and
+  # wp-load.php looks for wp-config.php beside it. A wp-config.php written into
+  # the docroot is therefore never read: WordPress concluded it was uninstalled
+  # and redirected every request to wp-admin/setup-config.php. managed mode has
+  # always put the generated config inside its store core for exactly this
+  # reason; git mode did not, which meant it could only ever serve the installer.
+  #
+  # When manageWpConfig is off the tree is used as-is, config and all.
+  gitCore =
+    if gitMode && cfg.source.manageWpConfig then
+      pkgs.runCommandLocal "wordpress-git-core" { } ''
+        mkdir $out
+        cp -rL ${cfg.source.path}/. $out/
+        chmod -R u+w $out
+        rm -f $out/wp-config-sample.php
+        cp ${wpConfig} $out/wp-config.php
+      ''
+    else
+      null;
+  gitSrc = if gitCore != null then gitCore else cfg.source.path;
+
   dbLocal = cfg.database.createLocally && !d1;
   # Local DB uses MariaDB unix_socket auth (passwordless, OS-user matched);
   # external DB connects over TCP with a password.
@@ -229,6 +316,41 @@ let
     if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
         $_SERVER['REMOTE_ADDR'] = $_SERVER['HTTP_CF_CONNECTING_IP'];
     }
+  '';
+
+  # Public plane: the administration surfaces never reach PHP at all.
+  #
+  # Two deliberate holes. admin-ajax.php and admin-post.php stay reachable
+  # because WooCommerce, Give and essentially every form plugin POST to them
+  # from the front end. And /wp-json is left entirely open -- the Store API,
+  # block-editor assets and form endpoints live there, and blocking writes by
+  # path would break ordinary visitors. What makes that safe is not a path list
+  # but the session rule: platform-public-plane.php refuses to authenticate a
+  # privileged user here, and each plane declares a different WP_SITEURL so
+  # COOKIEHASH differs and an admin cookie minted on the admin host does not
+  # authenticate on this one. With no privileged session obtainable, every
+  # administrative REST route and ajax action is already denied by WordPress'
+  # own capability checks.
+  publicPlaneDirectives = optionalString publicPlane ''
+    @wpAdmin {
+      path /wp-admin /wp-admin/*
+      not path /wp-admin/admin-ajax.php /wp-admin/admin-post.php
+    }
+    redir @wpAdmin ${cfg.plane.adminUrl}{uri} 302
+
+    ${optionalString (!cfg.plane.allowLogin) ''
+      redir /wp-login.php ${cfg.plane.adminUrl}{uri} 302
+    ''}
+
+    respond /xmlrpc.php 403
+
+    # Cron is the admin plane's job; the signup flows are not offered.
+    @notServed path /wp-cron.php /wp-signup.php /wp-activate.php /wp-links-opml.php
+    respond @notServed 404
+
+    # No PHP file under wp-content or wp-includes is a legitimate entry point.
+    @strayPhp path /wp-content/*.php /wp-includes/*.php
+    respond @strayPhp 404
   '';
 
   # journald fields shared with frappe-nix and odoo-nix: the cluster's log
@@ -284,6 +406,7 @@ let
     ${siteAddress} {
       ${bindDirective}
       ${accessLogDirective}
+      ${publicPlaneDirectives}
 
       @static {
         file
@@ -302,8 +425,12 @@ let
     // Managed by services.wordpress-nix — regenerated on activation; do not edit.
 
     ${socketRemoteAddr}
-    ${optionalString managed ''
-      // Managed mode: core lives in the (read-only) store; content is mutable.
+    ${optionalString (managed || gitMode) ''
+      // Core lives in the (read-only) store, so ABSPATH is a store path. Point
+      // wp-content back at the docroot: that is where the symlink farm puts the
+      // read-only plugins/themes and the real, writable uploads, cache and
+      // upgrade directories. Without this, uploads would resolve to a store
+      // path that does not exist and every write would fail.
       define('WP_CONTENT_DIR', '${docroot}/wp-content');
     ''}
     ${optionalString remoteSqlite ''
@@ -363,9 +490,26 @@ let
 
     // Debug mode
     define('WP_DEBUG', ${if cfg.debug then "true" else "false"});
-    ${optionalString (cfg.domain != "") ''
-      define('WP_HOME', 'https://${cfg.domain}');
-      define('WP_SITEURL', 'https://${cfg.domain}');
+    ${optionalString (planeUrls.home != "") "define('WP_HOME', '${planeUrls.home}');"}
+    ${optionalString (planeUrls.siteurl != "") "define('WP_SITEURL', '${planeUrls.siteurl}');"}
+    ${optionalString (cfg.plane.role != "single") ''
+      // Which plane this is. The platform mu-plugins key off it: the public
+      // plane refuses privileged logins and redirects admin requests, the
+      // admin plane repairs preview links and drives gitium.
+      define('WP_PLATFORM_PLANE', '${cfg.plane.role}');
+      ${optionalString (cfg.plane.adminUrl != "")
+        "define('WP_PLATFORM_ADMIN_URL', '${cfg.plane.adminUrl}');"
+      }
+      ${optionalString (cfg.plane.publicUrl != "")
+        "define('WP_PLATFORM_PUBLIC_URL', '${cfg.plane.publicUrl}');"
+      }
+    ''}
+    ${optionalString (cfg.plane.excludePlugins != [ ]) ''
+      // Dropped from active_plugins on this plane only, without touching the
+      // database (platform-environment.php).
+      define('WP_PLATFORM_PLANE_EXCLUDED_PLUGINS', '${
+        lib.concatStringsSep "," cfg.plane.excludePlugins
+      }');
     ''}
     define('FS_METHOD', 'direct');
     ${
@@ -379,11 +523,20 @@ let
         "define('WP_AUTO_UPDATE_CORE', 'minor');"
     }
     define('CONCATENATE_SCRIPTS', false);
-    ${optionalString (!managed) "define('DISALLOW_FILE_EDIT', true);"}
-    ${optionalString (cfg.source.type == "git") "define('DISALLOW_FILE_MODS', true);"}
+    ${optionalString (!managed || publicPlane) "define('DISALLOW_FILE_EDIT', true);"}
+    ${optionalString (cfg.source.type == "git" || publicPlane) "define('DISALLOW_FILE_MODS', true);"}
     ${optionalString (managed && cfg.source.siteRepo.deployKeyFile != null) ''
       // gitium authenticates pushes with the same deploy key init cloned with.
       define('GIT_KEY_FILE', '${cfg.source.siteRepo.deployKeyFile}');
+    ''}
+    ${optionalString installGitium ''
+      // The platform installed gitium; platform-gitium.php activates it.
+      define('WP_PLATFORM_GITIUM', true);
+      // One lock for every caller. gitium's default is a file in the PHP
+      // temp directory, and the web service and the reconcile timer each get
+      // their own PrivateTmp — so they would take two different locks and run
+      // git concurrently.
+      define('WP_PLATFORM_GITIUM_LOCK', '${gitiumLock}');
     ''}
     define('DISABLE_WP_CRON', true);
     define('WP_CACHE', true);
@@ -459,8 +612,10 @@ let
         ''
       else
         ''
-          # Git mode: rebuild the writable symlink farm into the read-only store docroot.
-          SRC=${lib.escapeShellArg (toString cfg.source.path)}
+          # Git mode: rebuild the writable symlink farm into the read-only store
+          # docroot — which carries the generated wp-config.php, because PHP
+          # resolves these symlinks and ABSPATH lands there (see gitCore).
+          SRC=${lib.escapeShellArg (toString gitSrc)}
           for entry in "$SRC"/*; do
             base=$(basename "$entry")
             case "$base" in
@@ -496,6 +651,20 @@ let
         cp -aL --no-preserve=mode ${p}/. "$DOCROOT/wp-content/mu-plugins/"
       '') cfg.muPlugins
     )}
+
+    ${optionalString installGitium ''
+      # gitium, refreshed every start so a platform bump applies on restart.
+      # The site repo's .gitignore excludes it, so replacing the directory does
+      # not show up as a change gitium would then try to commit.
+      install -d -m 0750 "$DOCROOT/wp-content/plugins"
+      rm -rf "$DOCROOT/wp-content/plugins/gitium"
+      cp -aL --no-preserve=mode ${cfg.gitium.package} "$DOCROOT/wp-content/plugins/gitium"
+      # gitium shells out to git through its own bundled ssh wrapper and refuses
+      # to show any UI unless that file is executable. The activation hook that
+      # would chmod it never runs, because the plugin is activated by a filter
+      # rather than through the database.
+      chmod 0755 "$DOCROOT/wp-content/plugins/gitium/inc/ssh-git"
+    ''}
 
     ${optionalString remoteSqlite ''
       # The database drop-in (regenerated each boot; a drop-in, so gitium ignores
@@ -557,7 +726,10 @@ let
     fi
     chmod 600 "$SECRETS"
 
-    ${optionalString (cfg.source.manageWpConfig && !managed) ''
+    ${optionalString (cfg.source.manageWpConfig && !managed && !gitMode) ''
+      # State mode only: its docroot holds real files, so ABSPATH is the docroot
+      # and the config belongs here. managed and git mode both carry it inside
+      # their store tree instead.
       rm -f "$DOCROOT/wp-config.php"
       cp ${wpConfig} "$DOCROOT/wp-config.php"
       chmod 644 "$DOCROOT/wp-config.php"
@@ -570,7 +742,7 @@ let
     export HOME=${lib.escapeShellArg cfg.stateDir}
     export WP_CLI_CACHE_DIR=${lib.escapeShellArg "${cfg.stateDir}/.wp-cli/cache"}
     export PHP_INI_SCAN_DIR=${lib.escapeShellArg phpIniScanDir}
-    exec ${getExe wpCli} --path=${lib.escapeShellArg docroot} "$@"
+    exec ${getExe wpCli} --path=${lib.escapeShellArg wpPath} "$@"
   '';
 
   serviceEnv = {
@@ -584,6 +756,12 @@ let
 
   # gitium shells out to git over ssh from web requests and cron.
   gitPath = optional managed pkgs.git ++ optional managed pkgs.openssh;
+
+  # Only managed mode has the mutable, git-backed wp-content that gitium needs:
+  # the public plane's tree is a read-only store path, and state mode has no
+  # remote to push to.
+  installGitium = managed && cfg.gitium.package != null;
+  gitiumLock = "${cfg.stateDir}/gitium.lock";
 in
 {
   options.services.wordpress-nix = {
@@ -917,8 +1095,15 @@ in
 
     cron.enable = mkOption {
       type = types.bool;
-      default = true;
-      description = "Run wp-cron on a systemd timer (WordPress' own cron is disabled).";
+      default = cfg.plane.role != "public";
+      defaultText = lib.literalExpression ''plane.role != "public"'';
+      description = ''
+        Run wp-cron on a systemd timer (WordPress' own cron is disabled).
+
+        Off by default on the public plane: the admin plane owns cron, so
+        Action Scheduler, scheduled posts and transactional email all run in one
+        place, with file modifications and the full plugin set available.
+      '';
     };
 
     debug = mkOption {
@@ -946,11 +1131,141 @@ in
       };
     };
 
+    gitium = {
+      package = mkOption {
+        type = types.nullOr types.path;
+        default = gitiumSrc;
+        defaultText = lib.literalExpression "the flake's pinned gitium input";
+        description = ''
+          The gitium plugin directory, installed into wp-content/plugins in
+          managed mode and activated by the platform-gitium mu-plugin rather
+          than through the database — so the site repo never carries it, never
+          commits it (its .gitignore excludes it), and the platform owns its
+          version.
+
+          null disables it, as does any source mode other than managed.
+          Defaults to the flake's pinned input, so it is null when the module
+          file is imported directly rather than through nixosModules.
+        '';
+      };
+
+      merge.enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Reconcile with the site's git remote on a timer.
+
+          gitium only acts on wp-admin's own events: it commits and pushes what
+          an administrator changes, and nothing pulls. Without this, a commit
+          pushed by a developer — or by CI — would never reach the site, and the
+          two would diverge until someone noticed.
+
+          Upstream's answer is a webhook, which means an unauthenticated PHP
+          endpoint and, behind an identity proxy, an explicit bypass carved
+          through it for a path that cannot present credentials. A timer
+          calling gitium's own merge-and-push needs neither, so the admin plane
+          keeps a single way in.
+
+          Ignored unless gitium is installed (managed mode).
+        '';
+      };
+
+      merge.interval = mkOption {
+        type = types.str;
+        default = "5min";
+        example = "1min";
+        description = "How often to reconcile (systemd time span).";
+      };
+    };
+
     muPlugins = mkOption {
       type = types.listOf types.path;
       default = [ ../mu-plugins ];
       defaultText = lib.literalExpression "[ ../mu-plugins ]";
       description = "Must-use plugin directories copied into wp-content/mu-plugins (state mode).";
+    };
+
+    plane = {
+      role = mkOption {
+        type = types.enum [
+          "single"
+          "public"
+          "admin"
+        ];
+        default = "single";
+        example = "public";
+        description = ''
+          Which half of a split-plane site this instance serves. Both halves
+          share one database; only their HTTP surface and write posture differ.
+
+          `single` — one instance serves everything (the default: nothing below
+            applies and behaviour is unchanged).
+          `public` — the read-only public face. No administration surface
+            reaches PHP, file modifications and wp-cron are off, and privileged
+            users cannot authenticate. Ordinary visitor writes — checkout,
+            donations, comments, form submissions — still work.
+          `admin` — the private writable face: the full wp-admin on `adminUrl`
+            behind an identity proxy, owning wp-cron and the git working tree.
+        '';
+      };
+
+      publicUrl = mkOption {
+        type = types.str;
+        default = "";
+        example = "https://example.com";
+        description = ''
+          Absolute URL of the public site, scheme included. Becomes WP_HOME on
+          both planes, so permalinks and outgoing email always name the real
+          site even when generated from the admin plane.
+        '';
+      };
+
+      adminUrl = mkOption {
+        type = types.str;
+        default = "";
+        example = "https://example.avunu.io";
+        description = ''
+          Absolute URL of the private admin face, scheme included. Becomes
+          WP_SITEURL on the admin plane, so wp-admin and wp-login live there,
+          and is where the public plane redirects administration requests.
+        '';
+      };
+
+      allowLogin = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Public plane only: keep /wp-login.php reachable. Needed by sites with
+          visitor accounts — membership, social login, a WooCommerce "my
+          account" password reset. Privileged users are still refused by
+          platform-public-plane.php, so this widens the brute-force surface but
+          not the privilege surface. Off → /wp-login.php redirects to adminUrl.
+        '';
+      };
+
+      excludePlugins = mkOption {
+        type = types.listOf types.str;
+        default =
+          if cfg.plane.role == "public" then
+            [
+              "jwt-auth"
+              "gitium"
+            ]
+          else
+            [ ];
+        defaultText = lib.literalExpression ''if plane.role == "public" then [ "jwt-auth" "gitium" ] else [ ]'';
+        description = ''
+          Plugin directory names dropped from `active_plugins` on this plane
+          only, without touching the database (platform-environment.php), so one
+          shared database can serve both planes with different plugin sets.
+
+          The public-plane default is load-bearing. jwt-auth refuses password
+          authentication on every path including XML-RPC and application
+          passwords, which would lock out exactly the visitor accounts the
+          public plane exists to serve; gitium needs a writable working tree and
+          a `chmod +x` on its own directory, and bails out here anyway.
+        '';
+      };
     };
 
     configExtra = mkOption {
@@ -1027,6 +1342,29 @@ in
       {
         assertion = !managed || cfg.source.manageWpConfig;
         message = "services.wordpress-nix: managed mode generates wp-config.php into the store core; manageWpConfig must stay true.";
+      }
+      {
+        assertion = !publicPlane || cfg.plane.publicUrl != "";
+        message = "services.wordpress-nix: plane.role = \"public\" requires plane.publicUrl — it becomes both WP_HOME and WP_SITEURL.";
+      }
+      {
+        assertion = !publicPlane || cfg.plane.adminUrl != "";
+        message = "services.wordpress-nix: plane.role = \"public\" requires plane.adminUrl — administration requests are redirected there.";
+      }
+      {
+        assertion = !adminPlane || cfg.plane.adminUrl != "";
+        message = "services.wordpress-nix: plane.role = \"admin\" requires plane.adminUrl — it becomes WP_SITEURL.";
+      }
+      {
+        assertion = !publicPlane || cfg.source.type == "git";
+        message =
+          "services.wordpress-nix: plane.role = \"public\" requires source.type = \"git\" — the public plane serves an"
+          + " immutable store docroot (lib/mk-site-docroot.nix builds one). state mode would let core self-update and"
+          + " managed mode keeps wp-content writable, neither of which a read-only public face should do.";
+      }
+      {
+        assertion = !publicPlane || !cfg.database.createLocally;
+        message = "services.wordpress-nix: plane.role = \"public\" shares the admin plane's database; set database.host/passwordFile instead of createLocally.";
       }
     ];
 
@@ -1177,6 +1515,47 @@ in
       // logFields "publisher" "wordpress-turso-publisher";
     };
 
+    systemd.services.wordpress-gitium-merge = mkIf (installGitium && cfg.gitium.merge.enable) {
+      description = "Reconcile the site repository (gitium merge and push)";
+      after = [ "wordpress.service" ];
+      requires = [ "wordpress.service" ];
+      path = [
+        wpCli
+        (cfg.database.package.client or cfg.database.package)
+      ]
+      ++ gitPath;
+      environment = serviceEnv;
+      serviceConfig = {
+        Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
+        ReadWritePaths = [ cfg.stateDir ];
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        # platform-gitium.php's reconcile, not gitium_auto_push(): that one
+        # returns early unless the private key is in the `gitium_keypair`
+        # option, and the platform supplies it as a file (GIT_KEY_FILE) rather
+        # than putting a repository write key in a database the read-only plane
+        # can also read. The reconcile still hands the commits to gitium's own
+        # merge-and-push, so the conflict policy stays gitium's.
+        ExecStart = "${getExe wpCli} eval 'wp_platform_gitium_reconcile();' --path=${wpPath}";
+      }
+      // logFields "gitium" "wordpress-gitium-merge";
+    };
+
+    systemd.timers.wordpress-gitium-merge = mkIf (installGitium && cfg.gitium.merge.enable) {
+      description = "Reconcile the site repository periodically";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = cfg.gitium.merge.interval;
+        AccuracySec = "30s";
+        Unit = "wordpress-gitium-merge.service";
+      };
+    };
+
     systemd.services.wordpress-cron = mkIf cfg.cron.enable {
       description = "WordPress scheduled tasks (wp-cron)";
       after = [ "wordpress.service" ];
@@ -1196,7 +1575,12 @@ in
         ProtectHome = true;
         PrivateTmp = true;
         NoNewPrivileges = true;
-        ExecStart = "${getExe wpCli} cron event run --all --due-now --path=${docroot}";
+        # --due-now runs the events whose time has come, which is what a cron
+        # replacement does. `--all --due-now` is rejected by wp-cli as
+        # contradictory ("Please use either --due-now or --all"), so every run
+        # exited 1 and nothing scheduled ever fired — invisibly, because the
+        # timer stayed active either way.
+        ExecStart = "${getExe wpCli} cron event run --due-now --path=${wpPath}";
       }
       // logFields "cron" "wordpress-cron";
     };
@@ -1240,5 +1624,10 @@ in
 
     # The generated Caddyfile, for inspection and the flake's logging check.
     system.build.wordpressCaddyfile = caddyfile;
+
+    # Likewise the generated wp-config.php. The split-plane posture lives mostly
+    # in constants (WP_HOME vs WP_SITEURL, WP_PLATFORM_PLANE, DISALLOW_FILE_MODS),
+    # so the checks need to be able to read it without booting a VM.
+    system.build.wordpressConfigPhp = wpConfig;
   };
 }

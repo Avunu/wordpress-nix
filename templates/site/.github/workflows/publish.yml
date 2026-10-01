@@ -1,0 +1,25 @@
+# Thin caller: the pipeline lives in the platform repo and updates centrally.
+#
+# On every push to main — a developer's, or gitium's after an edit in wp-admin —
+# tell the cluster to serve this commit on the site's public face. Pin to a tag
+# instead of @main for controlled rollout.
+name: publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: A full 40-character sha to serve — the rollback entry point.
+        required: false
+
+jobs:
+  publish:
+    uses: Avunu/wordpress/.github/workflows/site-publish.yml@main
+    with:
+      # Must match the name of the cluster's apps/<slug>.json.
+      slug: CHANGE_ME
+      ref: ${{ inputs.ref || github.sha }}
+    secrets:
+      cluster-token: ${{ secrets.CLUSTER_DISPATCH_TOKEN }}

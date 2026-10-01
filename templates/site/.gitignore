@@ -13,6 +13,9 @@ wp-content/mu-plugins/platform-*.php
 wp-content/db.php
 wp-content/object-cache.php
 wp-content/advanced-cache.php
+# gitium versions the site but is not part of it: the platform reinstalls it on
+# every start, and without this line gitium would commit itself on first sweep.
+wp-content/plugins/gitium/
 
 # --- WordPress core (symlinked/baked; the platform pin owns it) ---
 /wp-admin/
