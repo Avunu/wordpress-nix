@@ -532,6 +532,11 @@ let
     ${optionalString installGitium ''
       // The platform installed gitium; platform-gitium.php activates it.
       define('WP_PLATFORM_GITIUM', true);
+      // One lock for every caller. gitium's default is a file in the PHP
+      // temp directory, and the web service and the reconcile timer each get
+      // their own PrivateTmp — so they would take two different locks and run
+      // git concurrently.
+      define('WP_PLATFORM_GITIUM_LOCK', '${gitiumLock}');
     ''}
     define('DISABLE_WP_CRON', true);
     define('WP_CACHE', true);
@@ -653,7 +658,7 @@ let
       # not show up as a change gitium would then try to commit.
       install -d -m 0750 "$DOCROOT/wp-content/plugins"
       rm -rf "$DOCROOT/wp-content/plugins/gitium"
-      cp -aL --no-preserve=mode ${cfg.gitium} "$DOCROOT/wp-content/plugins/gitium"
+      cp -aL --no-preserve=mode ${cfg.gitium.package} "$DOCROOT/wp-content/plugins/gitium"
       # gitium shells out to git through its own bundled ssh wrapper and refuses
       # to show any UI unless that file is executable. The activation hook that
       # would chmod it never runs, because the plugin is activated by a filter
@@ -755,7 +760,8 @@ let
   # Only managed mode has the mutable, git-backed wp-content that gitium needs:
   # the public plane's tree is a read-only store path, and state mode has no
   # remote to push to.
-  installGitium = managed && cfg.gitium != null;
+  installGitium = managed && cfg.gitium.package != null;
+  gitiumLock = "${cfg.stateDir}/gitium.lock";
 in
 {
   options.services.wordpress-nix = {
@@ -1125,20 +1131,51 @@ in
       };
     };
 
-    gitium = mkOption {
-      type = types.nullOr types.path;
-      default = gitiumSrc;
-      defaultText = lib.literalExpression "the flake's pinned gitium input";
-      description = ''
-        The gitium plugin directory, installed into wp-content/plugins in
-        managed mode and activated by the platform-gitium mu-plugin rather than
-        through the database — so the site repo never carries it, never commits
-        it (its .gitignore excludes it), and the platform owns its version.
+    gitium = {
+      package = mkOption {
+        type = types.nullOr types.path;
+        default = gitiumSrc;
+        defaultText = lib.literalExpression "the flake's pinned gitium input";
+        description = ''
+          The gitium plugin directory, installed into wp-content/plugins in
+          managed mode and activated by the platform-gitium mu-plugin rather
+          than through the database — so the site repo never carries it, never
+          commits it (its .gitignore excludes it), and the platform owns its
+          version.
 
-        null disables it, as does any source mode other than managed. Defaults
-        to the flake's pinned input, so it is null when the module file is
-        imported directly rather than through nixosModules.
-      '';
+          null disables it, as does any source mode other than managed.
+          Defaults to the flake's pinned input, so it is null when the module
+          file is imported directly rather than through nixosModules.
+        '';
+      };
+
+      merge.enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Reconcile with the site's git remote on a timer.
+
+          gitium only acts on wp-admin's own events: it commits and pushes what
+          an administrator changes, and nothing pulls. Without this, a commit
+          pushed by a developer — or by CI — would never reach the site, and the
+          two would diverge until someone noticed.
+
+          Upstream's answer is a webhook, which means an unauthenticated PHP
+          endpoint and, behind an identity proxy, an explicit bypass carved
+          through it for a path that cannot present credentials. A timer
+          calling gitium's own merge-and-push needs neither, so the admin plane
+          keeps a single way in.
+
+          Ignored unless gitium is installed (managed mode).
+        '';
+      };
+
+      merge.interval = mkOption {
+        type = types.str;
+        default = "5min";
+        example = "1min";
+        description = "How often to reconcile (systemd time span).";
+      };
     };
 
     muPlugins = mkOption {
@@ -1476,6 +1513,47 @@ in
         NoNewPrivileges = true;
       }
       // logFields "publisher" "wordpress-turso-publisher";
+    };
+
+    systemd.services.wordpress-gitium-merge = mkIf (installGitium && cfg.gitium.merge.enable) {
+      description = "Reconcile the site repository (gitium merge and push)";
+      after = [ "wordpress.service" ];
+      requires = [ "wordpress.service" ];
+      path = [
+        wpCli
+        (cfg.database.package.client or cfg.database.package)
+      ]
+      ++ gitPath;
+      environment = serviceEnv;
+      serviceConfig = {
+        Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
+        ReadWritePaths = [ cfg.stateDir ];
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        # platform-gitium.php's reconcile, not gitium_auto_push(): that one
+        # returns early unless the private key is in the `gitium_keypair`
+        # option, and the platform supplies it as a file (GIT_KEY_FILE) rather
+        # than putting a repository write key in a database the read-only plane
+        # can also read. The reconcile still hands the commits to gitium's own
+        # merge-and-push, so the conflict policy stays gitium's.
+        ExecStart = "${getExe wpCli} eval 'wp_platform_gitium_reconcile();' --path=${wpPath}";
+      }
+      // logFields "gitium" "wordpress-gitium-merge";
+    };
+
+    systemd.timers.wordpress-gitium-merge = mkIf (installGitium && cfg.gitium.merge.enable) {
+      description = "Reconcile the site repository periodically";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = cfg.gitium.merge.interval;
+        AccuracySec = "30s";
+        Unit = "wordpress-gitium-merge.service";
+      };
     };
 
     systemd.services.wordpress-cron = mkIf cfg.cron.enable {

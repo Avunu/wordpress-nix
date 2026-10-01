@@ -446,5 +446,38 @@ pkgs.testers.runNixOSTest {
         "su -s /bin/sh wordpress -c 'wp plugin list --status=active --field=name'"
         " | grep -qx gitium"
     )
+
+    # Reconciling on a timer is what replaces gitium's webhook: gitium only acts
+    # on wp-admin's own events, so without this a developer's push would never
+    # reach the site. A webhook would mean an unauthenticated PHP endpoint and,
+    # behind an identity proxy, a bypass carved through it.
+    wpadmin.succeed("systemctl is-active wordpress-gitium-merge.timer")
+    wppublic.fail("systemctl is-active wordpress-gitium-merge.timer")
+    # It runs. There is no remote in this fixture, so the push fails and the
+    # reconcile returns false; what is asserted is that the unit reaches gitium
+    # at all rather than dying on a missing function or an unreadable config.
+    wpadmin.succeed("systemctl start wordpress-gitium-merge.service")
+    # Regression: gitium's own gitium_auto_push() returns before touching git
+    # unless the private key is in the `gitium_keypair` option, and the platform
+    # supplies it as GIT_KEY_FILE instead — so every push gitium wires to
+    # wp-admin's events was silently dead. The platform's reconcile must not
+    # depend on that option.
+    wpadmin.succeed(
+        "sudo -u wordpress wp eval 'var_export(function_exists(\"wp_platform_gitium_reconcile\"));'"
+        " | grep -qx true"
+    )
+    wpadmin.succeed(
+        "sudo -u wordpress wp eval 'var_export(empty(get_option(\"gitium_keypair\")));'"
+        " | grep -qx true"
+    )
+    wpadmin.succeed(
+        "systemctl show -p Result wordpress-gitium-merge.service | grep -x Result=success"
+    )
+    # Both callers must take the SAME lock: the web service and this timer have
+    # separate PrivateTmp, and gitium's default lock lives in the temp directory.
+    wpadmin.succeed(
+        "sudo -u wordpress wp eval 'echo apply_filters(\"gitium_lock_path\", \"unset\");'"
+        " | grep -qx /var/lib/wordpress/gitium.lock"
+    )
   '';
 }
