@@ -263,6 +263,23 @@
         "type": "github"
       }
     },
+    "gitium": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790765847,
+        "narHash": "sha256-soypFoCdyPyjRpyOUF2KgqeI+mdov7Tr/09P1TSSTEI=",
+        "owner": "presslabs",
+        "repo": "gitium",
+        "rev": "664967c97377829b7ba09ea4e339cbb48983deb3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "presslabs",
+        "ref": "1.2.5",
+        "repo": "gitium",
+        "type": "github"
+      }
+    },
     "nix": {
       "inputs": {
         "flake-compat": [
@@ -401,6 +418,7 @@
         "devenv": "devenv",
         "flake-parts": "flake-parts_2",
         "flake-utils": "flake-utils",
+        "gitium": "gitium",
         "nixpkgs": "nixpkgs_2",
         "wordpress-sqlite-anywhere": "wordpress-sqlite-anywhere"
       }

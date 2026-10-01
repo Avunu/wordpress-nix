@@ -18,6 +18,16 @@
       url = "git+https://github.com/Avunu/wordpress-sqlite-anywhere?ref=main&submodules=1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # gitium, which commits wp-admin's filesystem changes and pushes them to the
+    # site's git remote. It is platform infrastructure rather than site payload:
+    # the admin plane installs it from here and platform-admin-plane.php
+    # activates it through a filter, so the site repo never carries it, never
+    # commits it, and cannot drift from the platform's version.
+    gitium = {
+      url = "github:presslabs/gitium/1.2.5";
+      flake = false;
+    };
   };
 
   nixConfig = {
@@ -34,6 +44,7 @@
       flake-utils,
       flake-parts,
       wordpress-sqlite-anywhere,
+      gitium,
       ...
     }:
     {
@@ -46,6 +57,8 @@
       nixosModules.default = import ./modules/nixos.nix {
         sqliteAnywhere = wordpress-sqlite-anywhere;
         rustNixpkgs = nixpkgs;
+        # The repo root holds the plugin in a gitium/ subdirectory.
+        gitiumSrc = "${gitium}/gitium";
       };
       nixosModules.wordpress-nix = self.nixosModules.default;
 
@@ -69,6 +82,12 @@
         mkPhp = import ./lib/php.nix; # { pkgs, php ? pkgs.php83, optimize ? true, ... }
         mkFrankenphp = import ./lib/frankenphp.nix; # { pkgs, php }
         mkWordPressSite = import ./lib/site.nix; # { pkgs, src, php ? ..., plugins ? {}, themes ? {} }
+
+        # The immutable document root a read-only public plane serves: the
+        # pinned core, the site's wp-content and the platform mu-plugins,
+        # composed at build time. Pair with source.type = "git".
+        #   mkSiteDocroot { inherit pkgs; wpContent = "${siteRepo}/wp-content"; }
+        mkSiteDocroot = import ./lib/mk-site-docroot.nix;
 
         # Per-site OCI image: the pinned core + the site repo's wp-content,
         # with the D1 driver stack included by default. The primary builder
@@ -188,6 +207,9 @@
             inherit pkgs;
             php = pkgs.php85;
           };
+          # The migration's gate on an untrusted dump: refuse, or strip, the
+          # objects that would EXECUTE on the new server once restored.
+          audit-mysql-dump = import ./lib/audit-mysql-dump.nix { inherit pkgs; };
           # Migration, step two: load the SQLite file into a Turso database.
           sqlite-to-turso = import ./lib/sqlite-to-turso.nix { inherit pkgs; };
           # The Turso snapshot publisher: the front end's read path. A live Turso
@@ -227,6 +249,11 @@
             restoreCoreKeys = self.packages.${system}.restore-core-keys;
             converter = self.packages.${system}.mysql-to-sqlite;
           };
+          # An untrusted dump is refused, reported, and stripped clean.
+          audit-mysql-dump = import ./tools/test/audit-mysql-dump-test.nix {
+            inherit pkgs;
+            auditor = self.packages.${system}.audit-mysql-dump;
+          };
           # Loader round-trip against a local tursodb sync server.
           sqlite-to-turso = import ./tools/test/sqlite-to-turso-test.nix {
             inherit pkgs;
@@ -237,6 +264,12 @@
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           # The journald/access-log contract, evaluated and adapted (no VM).
           logging = import ./tests/logging.nix {
+            inherit pkgs;
+            inherit (nixpkgs.lib) nixosSystem;
+            wordpressModule = self.nixosModules.default;
+          };
+          # The split-plane posture: Caddy matchers and wp-config constants.
+          plane = import ./tests/plane.nix {
             inherit pkgs;
             inherit (nixpkgs.lib) nixosSystem;
             wordpressModule = self.nixosModules.default;

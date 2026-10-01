@@ -1,0 +1,69 @@
+# Reusable: tell the cluster that a site's content moved.
+#
+# A split-plane site's public face serves an IMMUTABLE store docroot built from a
+# pinned git rev (see lib/mk-site-docroot.nix). So a push to a site repo — whether
+# a developer's, or gitium's after an edit in wp-admin — does nothing on its own.
+# This workflow bumps `wordpress.content.rev` in the cluster's apps/<slug>.json;
+# the cluster's pull-deploy then rebuilds the public face within its interval.
+#
+# That delay is the point. The admin face already has the change (shared
+# database, mutable wp-content); the public face gets it only once the commit is
+# recorded in the cluster repo, which is also what makes a rollback `git revert`.
+#
+# A site repo calls this with ~10 lines; see templates/site.
+name: site-publish
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: The site's slug — the name of its apps/<slug>.json.
+        required: true
+        type: string
+      ref:
+        description: The commit the public face should serve. Defaults to this push.
+        required: false
+        type: string
+      cluster-repo:
+        required: false
+        type: string
+        default: Avunu/nixos-hosting-cloud
+    secrets:
+      cluster-token:
+        description: >
+          A token with `contents: write` on the cluster repo ONLY. It never needs
+          access to any site repo, which is why the dispatch runs in this
+          direction rather than the cluster polling every site.
+        required: true
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the cluster to serve this commit
+        env:
+          GH_TOKEN: ${{ secrets.cluster-token }}
+          SLUG: ${{ inputs.slug }}
+          REV: ${{ inputs.ref || github.sha }}
+          REPO: ${{ inputs.cluster-repo }}
+        run: |
+          set -euo pipefail
+
+          # A full 40-character sha, because builtins.fetchGit needs one to stay
+          # pure — a branch name would make the cluster's eval impure and its
+          # result unreproducible.
+          case "$REV" in
+            ????????????????????????????????????????) ;;
+            *) echo "::error::ref must be a full 40-character sha, got '$REV'" >&2; exit 1 ;;
+          esac
+
+          gh api "repos/$REPO/dispatches" \
+            --method POST \
+            --field event_type=site-content \
+            --field "client_payload[slug]=$SLUG" \
+            --field "client_payload[rev]=$REV" \
+            --field "client_payload[source]=${{ github.repository }}"
+
+          echo "Asked $REPO to serve $SLUG at $REV."
