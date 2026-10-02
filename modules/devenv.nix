@@ -34,7 +34,7 @@ in
         siteName = mkOption {
           type = types.strMatching "^[a-z0-9][a-z0-9-]*$";
           description = "Site identifier: ports are hashed from it, and it names the image.";
-          example = "anabaptistperspectives";
+          example = "mysite";
         };
 
         siteRoot = mkOption {

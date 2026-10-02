@@ -4,7 +4,7 @@ A migration restores a database from a host we do not control and have not
 audited. That dump is an input, not a trusted artifact: it can carry executable
 objects that run on the NEW server the moment they are restored.
 
-This is not hypothetical. The dump taken to migrate anabaptistperspectives.org
+This is not hypothetical. The dump taken to migrate one client site
 contained a trigger on wp_comments that created an administrator account
 whenever a comment matched a phrase, and the account it had already created was
 in the dump too. Restoring that dump faithfully would have migrated the
