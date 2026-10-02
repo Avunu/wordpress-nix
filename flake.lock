@@ -79,11 +79,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1790346439,
-        "narHash": "sha256-nfyzhOEEuLw5icIfcQjNX45Zm1ZYO3iHtsX5POX83hk=",
+        "lastModified": 1790545482,
+        "narHash": "sha256-/uN68L/qi/al6Uq+gAzOP0DrX6j9tSLTsCqm83Q5QXI=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "f8f09b5807f7b3e2d6a7042c93fddc707138e65a",
+        "rev": "69875f70c1df9b3754ce4f414438240b265778b3",
         "type": "github"
       },
       "original": {
@@ -266,16 +266,16 @@
     "gitium": {
       "flake": false,
       "locked": {
-        "lastModified": 1790765847,
-        "narHash": "sha256-soypFoCdyPyjRpyOUF2KgqeI+mdov7Tr/09P1TSSTEI=",
+        "lastModified": 1787301894,
+        "narHash": "sha256-6ye7TmsYVCwo4hYtyYgYrR9NjJesi1Tapi5UNY0uSgM=",
         "owner": "presslabs",
         "repo": "gitium",
-        "rev": "664967c97377829b7ba09ea4e339cbb48983deb3",
+        "rev": "44efd8c5979da2ad9806ca00a3911668e2bb90df",
         "type": "github"
       },
       "original": {
         "owner": "presslabs",
-        "ref": "1.2.5",
+        "ref": "1.2.4",
         "repo": "gitium",
         "type": "github"
       }
@@ -399,11 +399,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1790185690,
-        "narHash": "sha256-xJ+X4hBtOcAFGBOe5nAMyMUeF9foJBmIOu3NjBqBycU=",
+        "lastModified": 1790578696,
+        "narHash": "sha256-ZoxIApko70jCdbH3l20HWXOBaT2HZd87orzd2yJ9dVE=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "4975466d324710c576dc11ad614684e6bd8cad8e",
+        "rev": "7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f",
         "type": "github"
       },
       "original": {
@@ -506,11 +506,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1790359235,
-        "narHash": "sha256-RKYDkTB1V1oI15qf399P04MRQGHILo4mw2jFmPMVdiI=",
+        "lastModified": 1790614978,
+        "narHash": "sha256-xOw9iim0jAeocXehJ1vRHHVsmnqRulKOaxgE1oGVcTk=",
         "ref": "main",
-        "rev": "9dbef14ed589129df334becaed36a60299cd9cf1",
-        "revCount": 63,
+        "rev": "770ede47e90f57b14cec5c475715c0e5994d3670",
+        "revCount": 65,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/Avunu/wordpress-sqlite-anywhere"
