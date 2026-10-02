@@ -2,7 +2,7 @@
 
 A thin site repo: **payload + identity + pins**. All platform code (the
 edge Worker, container image recipe, static-asset builder, deploy
-pipeline) comes from [wordpress-nix](https://github.com/Avunu/wordpress)
+pipeline) comes from [wordpress-nix](https://github.com/Avunu/wordpress-nix)
 at the revision pinned in `flake.lock`.
 
 | What              | Where                                              |

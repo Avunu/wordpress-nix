@@ -147,8 +147,10 @@
           };
       };
 
-      # `nix flake init -t github:Avunu/wordpress#site` scaffolds a new
-      # thin site repo (payload + identity + pins only).
+      # `nix flake init -t github:Avunu/wordpress-nix#site` scaffolds a new
+      # thin site repo (payload + identity + pins only). `nix run
+      # github:Avunu/wordpress-nix` does the same and more: it also adopts an
+      # existing WordPress install in place (see lib/init.nix).
       templates.site = {
         path = ./templates/site;
         description = "A WordPress-on-Cloudflare site: wp-content payload, wrangler identity, flake pin, CI caller";
@@ -167,7 +169,25 @@
         mkD1Image = php: imageName: self.lib.mkSiteImage { inherit pkgs php imageName; };
       in
       {
+        # `nix run github:Avunu/wordpress-nix` bootstraps the current directory
+        # as a wordpress-nix site. (`packages.default` stays the PHP 8.3 image:
+        # `nix build` is still how that is built.)
+        apps =
+          let
+            app = {
+              type = "app";
+              program = "${self.packages.${system}.wordpress-init}/bin/wordpress-init";
+              meta.description = "Bootstrap a wordpress-nix site: scaffold, adopt an existing WordPress install, or reconcile";
+            };
+          in
+          {
+            default = app;
+            wordpress-init = app;
+          };
+
         packages = {
+          # The bootstrapper behind `nix run`.
+          wordpress-init = import ./lib/init.nix { inherit pkgs; };
           wordpress-php82 = mkImage pkgs.php82 "wordpress-php82";
           wordpress-php83 = mkImage pkgs.php83 "wordpress-php83";
           wordpress-php84 = mkImage pkgs.php84 "wordpress-php84";
@@ -262,6 +282,8 @@
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # The bootstrapper: fresh, adopted, re-run and guarded directories.
+          wordpress-init = import ./tests/init.nix { inherit pkgs; };
           # The journald/access-log contract, evaluated and adapted (no VM).
           logging = import ./tests/logging.nix {
             inherit pkgs;

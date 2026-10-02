@@ -16,7 +16,7 @@ on:
 
 jobs:
   publish:
-    uses: Avunu/wordpress/.github/workflows/site-publish.yml@main
+    uses: Avunu/wordpress-nix/.github/workflows/site-publish.yml@main
     with:
       # Must match the name of the cluster's apps/<slug>.json.
       slug: CHANGE_ME

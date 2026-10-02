@@ -16,9 +16,6 @@
 			"path": "../wordpress-cloudflare"
 		},
 		{
-			"path": "../nixos-container-orchestration"
-		},
-		{
 			"path": "../gitium"
 		},
 		{
@@ -28,67 +25,22 @@
 			"path": "../wordpress-jwt-auth"
 		},
 		{
-			"path": "../nixos-router"
-		},
-		{
-			"path": "../frappe-nix"
-		},
-		{
-			"path": "../odoo-nix"
-		},
-		{
 			"path": "../nixpkgs"
-		},
-		{
-			"path": "../server-little_cocalico"
-		},
-		{
-			"path": "../odoo-dev"
-		},
-		{
-			"path": "../erpnext_taskview"
-		},
-		{
-			"path": "../frappe_editor"
-		},
-		{
-			"path": "../frappe-carbon-dev/apps/carbon_frappe"
 		},
 		{
 			"path": "../clan-core"
 		},
 		{
-			"path": "../bench_avunu"
-		},
-		{
-			"path": "../nuget-packageslock2nix"
-		},
-		{
-			"path": "../peachpie-wordpress"
-		},
-		{
-			"path": "../wpdotnet-sdk"
-		},
-		{
 			"path": "../wordpress-moonshot"
-		},
-		{
-			"path": "../turso"
-		},
-		{
-			"path": "../peachpie"
 		},
 		{
 			"path": "../wordpress-sqlite-anywhere"
 		},
 		{
+			"path": "../nixos-hosting-cloud"
+		},
+		{
 			"path": "../site-anabaptistperspectives"
-		},
-		{
-			"path": "../index-wp-mysql-for-speed"
-		},
-		{
-			"path": "../site-littlecocalico"
 		}
 	],
 	"settings": {}
