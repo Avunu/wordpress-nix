@@ -6,7 +6,14 @@
 /result
 /result-*
 /.direnv/
+/.devenv/
+/.devenv.flake.nix
 node_modules/
+
+# Local secrets for the dev shell (S3_KEY, JWT_AUTH_CLIENT_SECRET, ...).
+.env
+.env.*
+!.env.example
 
 # Platform-injected files: never committed, refreshed by the platform.
 wp-content/mu-plugins/platform-*.php
@@ -30,13 +37,19 @@ wp-config.php
 # --- Volatile site state (gitium also ignores these) ---
 wp-content/uploads/
 wp-content/upgrade/
+wp-content/upgrade-temp-backup/
 wp-content/cache/
 wp-content/backup-db/
 wp-content/backups/
 wp-content/blogs.dir/
 *.log
+# Debris from working on a server over SSH.
+*_history
+.rnd
+.wget-hsts
 *.sql
 *.sql.gz
+*.sqlite
 .htaccess
 .maintenance
 sitemap.xml

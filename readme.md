@@ -39,9 +39,12 @@ lib/{php,frankenphp,wordpress}.nix   # shared builders
 lib/php-extensions.nix    # the native wp_mysql_parser + wp_d1_client extensions (from the plugin flake)
 modules/nixos.nix         # services.wordpress-nix
 modules/containers.nix    # OCI image build (reuses lib/)
+lib/init.nix, lib/sh/     # wordpress-init: the `nix run` bootstrapper
+templates/site/           # what it lays down (also `nix flake init -t …#site`)
 conf/{php.ini,Caddyfile,wp-config.php}
 tests/module.nix          # NixOS VM test
 tests/logging.nix         # logging contract check (no VM)
+tests/init.nix            # bootstrapper check (no VM, no network)
 ```
 
 ## NixOS module
@@ -274,6 +277,45 @@ journalctl APP_SITE=blog.example.com APP_SERVICE=web -o json
   `wordpress-init`, writes its errors to stderr as plain text.
 * `WP_DEBUG_LOG` stays unset, so WordPress writes no `debug.log`.
 
+## Bootstrapping a site
+
+`nix run github:Avunu/wordpress-nix` (the default app, `lib/init.nix`) turns the current
+directory into a wordpress-nix site repo. Run it where the site lives; it detects what it
+is looking at:
+
+| In… | It… |
+|---|---|
+| an empty directory | scaffolds a new site from `templates/site` |
+| an existing WordPress install | adopts it in place: `wp-content/` becomes the payload; core, `wp-config.php`, uploads, caches and SQL dumps are gitignored (the platform pins core and generates its own `wp-config.php`). Nothing on disk is moved or deleted |
+| a wordpress-nix site | reconciles it: installs what is missing, refreshes the `.gitignore` block, never rewrites a file you own |
+
+```sh
+cd ~/sites/example && nix run github:Avunu/wordpress-nix    # or pass a directory
+nix run github:Avunu/wordpress-nix -- --dry-run             # the plan, writing nothing
+nix run github:Avunu/wordpress-nix -- --name example --database turso --commit
+```
+
+It writes `flake.nix` (site name filled in, `--database sqlite|turso|mysql`), `.envrc`,
+`wrangler.jsonc`, the `deploy`/`publish` CI callers and a README; splices a managed block
+into `.gitignore`; runs `git init` if the directory is not in a repository; stages
+everything (it commits only with `--commit`); and pins the platform with `nix flake lock`
+(`--skip-lock` to skip). An adopted install's `$table_prefix` is carried into the flake's
+`siteConfig` when it is not `wp_`, and any `.sql`/`.sqlite` file found is offered to
+`wp-import` in the next-steps list. Existing files are never overwritten — beside a
+`flake.nix` that is not wordpress-nix's, `--force` writes `flake.nix.wordpress-nix` to
+merge by hand. It reports what is still `CHANGEME` (Cloudflare IDs, URLs, the site repo);
+none of that is needed for local development.
+
+Then:
+
+```sh
+git diff --cached --stat   # review what was staged
+direnv allow               # or: nix develop --no-pure-eval
+devenv up                  # the site, on the platform stack
+wp-import export.sql       # in another shell: load the database
+wp-admin-user
+```
+
 ## Developing a site
 
 `flakeModules.default` is a [flake-parts](https://flake.parts) + [devenv](https://devenv.sh)
@@ -331,7 +373,7 @@ are defined into wp-config from environment variables of the same name when set 
 gitignored `.env` the template's `.envrc` loads. They are optional: mail is caught by
 Mailpit and media renders read-only from `S3_PUBLIC_URL` without them.
 
-`nix flake init -t github:Avunu/wordpress#site` scaffolds a site repo with this flake.
+`nix run github:Avunu/wordpress-nix` bootstraps one (see above); `nix flake init -t github:Avunu/wordpress-nix#site` lays down the bare template.
 
 ## Containers
 

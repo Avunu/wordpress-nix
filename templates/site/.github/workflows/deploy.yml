@@ -13,7 +13,7 @@ on:
 
 jobs:
   deploy:
-    uses: Avunu/wordpress/.github/workflows/site-deploy.yml@main
+    uses: Avunu/wordpress-nix/.github/workflows/site-deploy.yml@main
     with:
       ref: ${{ inputs.ref || github.sha }}
     secrets: inherit

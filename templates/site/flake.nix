@@ -2,7 +2,7 @@
   description = "A wordpress-nix site: wp-content payload + identity; the platform comes from wordpress-nix";
 
   inputs = {
-    wordpress-nix.url = "github:Avunu/wordpress";
+    wordpress-nix.url = "github:Avunu/wordpress-nix";
     # flake-parts resolves perSystem `pkgs` from an input named `nixpkgs`.
     nixpkgs.follows = "wordpress-nix/nixpkgs";
   };
