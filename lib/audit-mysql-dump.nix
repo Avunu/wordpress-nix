@@ -2,7 +2,7 @@
 #
 # A dump from a host we do not control can carry objects that EXECUTE on the new
 # server as soon as they are restored. The dump taken to migrate
-# anabaptistperspectives.org carried a trigger on wp_comments that minted an
+# one client site carried a trigger on wp_comments that minted an
 # administrator whenever a comment matched a phrase, plus the account it had
 # already minted. This refuses that dump, and with --strip produces one that is
 # only schema and data.
