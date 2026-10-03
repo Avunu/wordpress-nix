@@ -1,4 +1,4 @@
--- A dump with the shape of the anabaptistperspectives.org compromise, plus the
+-- A dump with the shape of a real-world compromise, plus the
 -- two formatting quirks that broke a line-by-line reader: VALUES at the end of a
 -- line with the tuples below it, and escaped quotes inside values.
 /*!40101 SET NAMES utf8mb4 */;

@@ -1,4 +1,4 @@
-# audit-mysql-dump: a dump carrying the shape of the anabaptistperspectives
+# audit-mysql-dump: a dump carrying the shape of a real-world
 # compromise -- a users-table trigger, a routine, a view, a DEFINER, and an
 # administrator whose capability was written in SQL rather than by WordPress --
 # must be refused and reported account by account, and then strip into a dump
