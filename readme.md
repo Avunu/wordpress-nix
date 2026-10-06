@@ -1,4 +1,6 @@
-# WordPress FrankenPHP for Nix
+# wordpress-nix
+
+WordPress on FrankenPHP, built with Nix: reproducible OCI images and a NixOS module from one codebase.
 
 This project provides two ways to deploy an optimized [FrankenPHP](https://frankenphp.dev/)
 WordPress stack from a single, shared Nix codebase:
@@ -439,4 +441,4 @@ Contributions are welcome! Please submit pull requests with any improvements or 
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
