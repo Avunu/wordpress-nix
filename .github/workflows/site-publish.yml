@@ -25,9 +25,14 @@ on:
         required: false
         type: string
       cluster-repo:
-        required: false
+        description: >
+          The repository (owner/name) that holds the cluster's apps/<slug>.json
+          files and receives the `site-content` repository_dispatch. Required:
+          there is deliberately no default, so this public workflow names no
+          particular cluster. Site repos usually pass a repository variable
+          (the template reads `vars.CLUSTER_REPO`).
+        required: true
         type: string
-        default: Avunu/nixos-hosting-cloud
     secrets:
       cluster-token:
         description: >
@@ -48,8 +53,15 @@ jobs:
           SLUG: ${{ inputs.slug }}
           REV: ${{ inputs.ref || github.sha }}
           REPO: ${{ inputs.cluster-repo }}
+          SOURCE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+
+          # The repo goes into an API path below, so insist on owner/name.
+          if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::cluster-repo must be owner/name, got '$REPO'" >&2
+            exit 1
+          fi
 
           # A full 40-character sha, because builtins.fetchGit needs one to stay
           # pure — a branch name would make the cluster's eval impure and its
@@ -64,6 +76,6 @@ jobs:
             --field event_type=site-content \
             --field "client_payload[slug]=$SLUG" \
             --field "client_payload[rev]=$REV" \
-            --field "client_payload[source]=${{ github.repository }}"
+            --field "client_payload[source]=$SOURCE_REPO"
 
           echo "Asked $REPO to serve $SLUG at $REV."

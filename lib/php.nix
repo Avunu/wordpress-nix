@@ -45,7 +45,7 @@ let
   #
   # Dropping the flag is worth -21% TTFB and +21% requests per vCPU on a real
   # WordPress page, for ~0.16 s of cold start and ~20 MB of RSS.
-  # Measured in wordpress-moonshot/BENCHMARK.md.
+  # Measured with the project's own benchmark harness (not published).
   #
   # On PHP 8.5 opcache is built into the interpreter: there is no opcache
   # extension attribute to override (the override would throw) and no JIT
