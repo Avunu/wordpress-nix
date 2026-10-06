@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/@avunu/docusystem/config.schema.json",
+  "name": "wordpress-nix",
+  "tagline": "A fast FrankenPHP WordPress stack built with Nix, deployable as OCI containers or a NixOS module, with MySQL, Cloudflare D1, or Turso databases.",
+  "slug": "wordpress-nix",
+  "platform": "nixos",
+  "repo": "https://github.com/Avunu/wordpress-nix",
+  "domain": "wordpress-nix.avunu.net",
+  "license": "MIT"
+}
