@@ -20,6 +20,10 @@ jobs:
     with:
       # Must match the name of the cluster's apps/<slug>.json.
       slug: CHANGE_ME
+      # The repository (owner/name) that holds the cluster's apps/<slug>.json.
+      # Set it once as a repository (or organisation) variable named
+      # CLUSTER_REPO; the reusable workflow has no default.
+      cluster-repo: ${{ vars.CLUSTER_REPO }}
       ref: ${{ inputs.ref || github.sha }}
     secrets:
       cluster-token: ${{ secrets.CLUSTER_DISPATCH_TOKEN }}

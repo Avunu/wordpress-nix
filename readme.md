@@ -308,6 +308,10 @@ everything (it commits only with `--commit`); and pins the platform with `nix fl
 merge by hand. It reports what is still `CHANGEME` (Cloudflare IDs, URLs, the site repo);
 none of that is needed for local development.
 
+The `publish` caller reads the repository that holds your cluster configuration from a
+`CLUSTER_REPO` repository (or organisation) variable; the reusable `site-publish` workflow
+has no default for it.
+
 Then:
 
 ```sh
