@@ -25,7 +25,7 @@
     # activates it through a filter, so the site repo never carries it, never
     # commits it, and cannot drift from the platform's version.
     gitium = {
-      url = "github:presslabs/gitium/1.2.4";
+      url = "github:presslabs/gitium/1.2.5";
       flake = false;
     };
   };
