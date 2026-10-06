@@ -7,3 +7,5 @@
 result
 result*
 workspace.code-workspace
+__pycache__/
+*.pyc
