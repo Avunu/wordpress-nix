@@ -10,7 +10,7 @@ Author URI: https://avu.nu/
 
 /*
  * What index-wp-mysql-for-speed did for MySQL, for the platform's SQLite
- * engines (local file, Turso, D1). That plugin's central move -- making the
+ * engines (local file, Turso). That plugin's central move -- making the
  * composite key the InnoDB clustered primary key -- has no SQLite analogue
  * (a table is clustered by rowid), and its rewritten primary keys are what
  * restore-core-keys undoes on migration. Its secondary composites transfer,

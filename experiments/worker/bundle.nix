@@ -1,4 +1,4 @@
-# Bundle the platform edge Worker (worker/) into a single-file ESM module
+# Bundle the platform edge Worker (this directory) into a single-file ESM module
 # for `wrangler deploy`. The bundle is fully site-agnostic — one artifact
 # serves every site at a given platform version — so site repos carry no
 # Worker code at all; they get the bundle by building `.#worker` (or calling
@@ -36,7 +36,7 @@ pkgs.runCommandLocal "wordpress-edge-worker"
   }
   ''
     mkdir -p build/node_modules/@cloudflare
-    cp -r ${../worker} build/src
+    cp -r ${./.} build/src
     chmod -R u+w build
     ln -s ${containersNpm} "build/node_modules/@cloudflare/containers"
     ${pkgs.lib.optionalString (entry != null) ''

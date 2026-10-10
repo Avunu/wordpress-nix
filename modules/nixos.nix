@@ -20,13 +20,12 @@
 #               store docroot (lib/wordpress-core.nix — never self-updates), while
 #               wp-content is fully mutable and seeded from the site's git repo
 #               (source.siteRepo), so wp-admin file mods work and gitium can
-#               version them. Pair with database.type = "d1" to share the public
+#               version them. Pair with database.type = "turso" to share the public
 #               frontend's database.
 #
 # Two database modes:
 #   * mysql — local MariaDB (createLocally) or external, as before.
-#   * d1    — no local database: the SQLite-driver D1 backend connects to the
-#             site Worker's authenticated /__d1 proxy (database.d1.*). Requires
+#   * turso — a Turso database over SQL-over-HTTP (database.turso.*). Requires
 #             consuming this module via the flake's nixosModules (which injects
 #             the driver source).
 #
@@ -38,7 +37,7 @@
 # Rust nixpkgs for the native extensions; both default to null so importing the
 # file directly still works for mysql-only deployments.
 {
-  # The wordpress-sqlite-anywhere flake, shared by the d1 and turso backends:
+  # The wordpress-sqlite-anywhere flake, which builds the turso backend:
   # its packages.default is the plugin, its lib builds the native pieces.
   sqliteAnywhere ? null,
   rustNixpkgs ? null,
@@ -106,10 +105,9 @@ let
         siteurl = "";
       };
 
-  d1 = cfg.database.type == "d1";
   turso = cfg.database.type == "turso";
-  # Both remote backends run the MySQL-on-SQLite driver rather than MySQL.
-  remoteSqlite = d1 || turso;
+  # The remote backend runs the MySQL-on-SQLite driver rather than MySQL.
+  remoteSqlite = turso;
 
   # The front end reads a published snapshot; without one every statement goes
   # to the primary, which is what the control plane wants.
@@ -149,9 +147,8 @@ let
 
   # --- remote SQLite plumbing ---
   # The native extensions, mirroring the OCI image: wp_mysql_parser speeds up
-  # the driver's translation on every remote backend (a rendered page is
-  # mostly that work once reads are local), wp_d1_client pools D1 requests,
-  # and wp_turso pools Turso requests and holds the embedded replica.
+  # the driver's translation (a rendered page is mostly that work once reads
+  # are local), and wp_turso pools Turso requests and holds the embedded replica.
   phpExtensions =
     if remoteSqlite then
       import ../lib/php-extensions.nix {
@@ -280,7 +277,7 @@ let
       null;
   gitSrc = if gitCore != null then gitCore else cfg.source.path;
 
-  dbLocal = cfg.database.createLocally && !d1;
+  dbLocal = cfg.database.createLocally;
   # Local DB uses MariaDB unix_socket auth (passwordless, OS-user matched);
   # external DB connects over TCP with a password.
   dbHost =
@@ -436,12 +433,6 @@ let
     ${optionalString remoteSqlite ''
       // The engine the WordPress SQLite Anywhere drop-in boots.
       define('DB_ENGINE', '${cfg.database.type}');
-    ''}
-    ${optionalString d1 ''
-      // Cloudflare D1 via the site Worker's authenticated proxy (db.php drop-in).
-      define('WP_D1_PROXY_URL', '${cfg.database.d1.proxyUrl}');
-      define('WP_D1_PROXY_TOKEN', trim((string) @file_get_contents('${cfg.database.d1.tokenFile}')));
-      define('WP_D1_HTTP_TIMEOUT_MS', ${toString cfg.database.d1.requestTimeoutMs});
     ''}
     ${optionalString turso ''
       // Turso through the MySQL-on-SQLite driver (db.php drop-in).
@@ -749,8 +740,8 @@ let
     HOME = cfg.stateDir;
     WP_CLI_CACHE_DIR = "${cfg.stateDir}/.wp-cli/cache";
     SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    # Applies to FrankenPHP's embedded PHP and to wp-cli alike (the D1
-    # native extensions load from here in d1 mode).
+    # Applies to FrankenPHP's embedded PHP and to wp-cli alike (the native
+    # extensions load from here in turso mode).
     PHP_INI_SCAN_DIR = phpIniScanDir;
   };
 
@@ -924,36 +915,14 @@ in
       type = mkOption {
         type = types.enum [
           "mysql"
-          "d1"
           "turso"
         ];
         default = "mysql";
         description = ''
-          `mysql` = MariaDB/MySQL (local or external); `d1` = the shared
-          Cloudflare D1 database through the site Worker's authenticated
-          /__d1 proxy (no local database at all); `turso` = a Turso database
+          `mysql` = MariaDB/MySQL (local or external); `turso` = a Turso database
           over SQL-over-HTTP, optionally reading from a locally published
           snapshot (see `database.turso.snapshotPath`).
         '';
-      };
-      d1 = {
-        proxyUrl = mkOption {
-          type = types.str;
-          default = "";
-          example = "https://example.com/__d1";
-          description = "Base URL of the site Worker's authenticated D1 proxy route.";
-        };
-        tokenFile = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          example = "/run/agenix/site-d1-proxy-token";
-          description = "Runtime path to the bearer token (matches the Worker's D1_PROXY_TOKEN secret).";
-        };
-        requestTimeoutMs = mkOption {
-          type = types.int;
-          default = 20000;
-          description = "HTTP request timeout for D1 proxy calls.";
-        };
       };
       turso = {
         url = mkOption {
@@ -1330,14 +1299,6 @@ in
       {
         assertion = !tursoSnapshot || cfg.database.turso.publishIntervalSeconds > 0;
         message = "services.wordpress-nix: database.turso.publishIntervalSeconds must be at least 1.";
-      }
-      {
-        assertion = !d1 || (cfg.database.d1.proxyUrl != "" && cfg.database.d1.tokenFile != null);
-        message = "services.wordpress-nix: database.type = \"d1\" requires database.d1.proxyUrl and database.d1.tokenFile.";
-      }
-      {
-        assertion = !d1 || !cfg.database.createLocally;
-        message = "services.wordpress-nix: database.type = \"d1\" is remote-only; disable database.createLocally.";
       }
       {
         assertion = !managed || cfg.source.manageWpConfig;

@@ -4,8 +4,6 @@
 #   - wp_mysql_parser: accelerates the MySQL lexer/parser of the SQLite
 #     driver (~15x parser speedup over pure PHP). Upstream's crate, reached
 #     through the plugin's driver submodule.
-#   - wp_d1_client: a native HTTP client for the Cloudflare D1 proxy
-#     protocol, holding a connection pool that persists across requests.
 #   - wp_turso: the Turso backend's pooled HTTP client, and the embedded
 #     replica the PHP process holds open for `database.turso.embedded`.
 #
@@ -25,15 +23,13 @@
 }:
 let
   wp-mysql-parser = sqliteAnywhere.lib.mkMysqlParserExtension { inherit pkgs php rustPkgs; };
-  wp-d1-client = sqliteAnywhere.lib.mkD1ClientExtension { inherit pkgs php rustPkgs; };
   wp-turso = sqliteAnywhere.lib.mkTursoExtension { inherit pkgs php rustPkgs; };
 in
 {
-  inherit wp-mysql-parser wp-d1-client wp-turso;
+  inherit wp-mysql-parser wp-turso;
 
   iniDir = pkgs.writeTextDir "wp-native-extensions.ini" ''
     extension=${wp-mysql-parser}/lib/libwp_mysql_parser.so
-    extension=${wp-d1-client}/lib/libwp_d1_client.so
     extension=${wp-turso}/lib/libwp_turso.so
   '';
 }

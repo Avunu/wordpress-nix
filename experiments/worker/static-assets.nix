@@ -19,7 +19,7 @@
   wordpressHash ? null,
 }:
 let
-  wordpressCore = import ./wordpress-core.nix {
+  wordpressCore = import ../../lib/wordpress-core.nix {
     inherit pkgs;
     version = wordpressVersion;
     hash = wordpressHash;

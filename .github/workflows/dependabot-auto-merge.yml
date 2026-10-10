@@ -10,8 +10,7 @@ name: Dependabot auto-merge
 #
 # Requires (one-time, in repo settings):
 #   • Settings → General → Pull Requests → "Allow auto-merge"
-#   • Settings → Rules → ruleset on `main` requiring the "test" (worker) and
-#     "build" (oci) checks
+#   • Settings → Rules → ruleset on `main` requiring the "build" (oci) check
 on: pull_request
 
 permissions:

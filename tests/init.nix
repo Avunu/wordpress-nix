@@ -25,7 +25,7 @@ pkgs.runCommand "wordpress-init-check"
     grep -q 'database.type = "turso"' fresh/flake.nix || fail "--database ignored"
     grep -q 'github:Avunu/wordpress-nix' fresh/flake.nix || fail "wrong platform input"
     ! grep -rq 'changeme-site-slug\|CHANGEME-site-slug' fresh --exclude-dir=.git || fail "slug placeholder left behind"
-    for f in flake.nix .envrc .gitignore wrangler.jsonc wp-content/plugins/.gitkeep; do
+    for f in flake.nix .envrc .gitignore wp-content/plugins/.gitkeep; do
       tracked fresh "$f" || fail "$f is not staged"
     done
 

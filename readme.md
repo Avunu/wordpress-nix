@@ -28,8 +28,7 @@ Both paths share the same optimized ZTS PHP build (`lib/php.nix`) and FrankenPHP
   so the driver's schema knows them), on the admin plane, and only on a driver that creates
   indexes in place (wordpress-sqlite-anywhere ≥ 1.2). A front-page `meta_query` on the first
   migrated site went from 600 ms to 77 ms.
-* Platform mu-plugins (`mu-plugins/platform-*.php`, refreshed on every deploy): edge page-cache
-  signalling, a 60-day nonce lifetime, and user-enumeration hardening (403 on `?author=<id>`
+* Platform mu-plugins (`mu-plugins/platform-*.php`, refreshed on every deploy): a 60-day nonce lifetime, and user-enumeration hardening (403 on `?author=<id>`
   probes, the users REST routes require authentication, no users sitemap, no oEmbed author URL)
   — so sites need no plugin for it, and none of that plugin's per-request writes.
 
@@ -38,7 +37,7 @@ Both paths share the same optimized ZTS PHP build (`lib/php.nix`) and FrankenPHP
 ```
 flake.nix                 # outputs: nixosModules.default, lib, packages, checks
 lib/{php,frankenphp,wordpress}.nix   # shared builders
-lib/php-extensions.nix    # the native wp_mysql_parser + wp_d1_client extensions (from the plugin flake)
+lib/php-extensions.nix    # the native wp_mysql_parser + wp_turso extensions (from the plugin flake)
 modules/nixos.nix         # services.wordpress-nix
 modules/containers.nix    # OCI image build (reuses lib/)
 lib/init.nix, lib/sh/     # wordpress-init: the `nix run` bootstrapper
@@ -118,13 +117,12 @@ Notes:
 | | |
 |---|---|
 | `mysql` | MariaDB/MySQL, local or external. The default. |
-| `d1` | Cloudflare D1 through the site Worker's authenticated `/__d1` proxy. |
 | `turso` | A Turso database over SQL-over-HTTP, optionally reading from a locally published snapshot. |
 
-Both remote backends run the MySQL-on-SQLite driver in place of MySQL, through
+The remote backend runs the MySQL-on-SQLite driver in place of MySQL, through
 the [WordPress SQLite Anywhere](https://github.com/Avunu/wordpress-sqlite-anywhere)
 plugin (a flake input); the module installs its `wp-content/db.php` drop-in and
-sets `DB_ENGINE` for you. The plugin requires PHP 8.5, so these modes need
+sets `DB_ENGINE` for you. The plugin requires PHP 8.5, so this mode needs
 `php = pkgs.php85` (an assertion says so).
 
 #### Turso
@@ -200,8 +198,7 @@ touch `database.turso.replicaPath`.
 
 #### Migrating a MySQL site
 
-Three tools, all flake packages, take a `mysqldump` to a populated Turso (or
-D1) database:
+Three tools, all flake packages, take a `mysqldump` to a populated Turso database:
 
 ```sh
 nix run github:Avunu/wordpress#restore-core-keys -- dump.sql dump-fixed.sql   # only if a plugin rewrote core keys
@@ -298,14 +295,14 @@ nix run github:Avunu/wordpress-nix -- --name example --database turso --commit
 ```
 
 It writes `flake.nix` (site name filled in, `--database sqlite|turso|mysql`), `.envrc`,
-`wrangler.jsonc`, the `deploy`/`publish` CI callers and a README; splices a managed block
+the `publish` CI caller and a README; splices a managed block
 into `.gitignore`; runs `git init` if the directory is not in a repository; stages
 everything (it commits only with `--commit`); and pins the platform with `nix flake lock`
 (`--skip-lock` to skip). An adopted install's `$table_prefix` is carried into the flake's
 `siteConfig` when it is not `wp_`, and any `.sql`/`.sqlite` file found is offered to
 `wp-import` in the next-steps list. Existing files are never overwritten — beside a
 `flake.nix` that is not wordpress-nix's, `--force` writes `flake.nix.wordpress-nix` to
-merge by hand. It reports what is still `CHANGEME` (Cloudflare IDs, URLs, the site repo);
+merge by hand. It reports what is still `CHANGEME` (the cluster slug, URLs, the site repo);
 none of that is needed for local development.
 
 The `publish` caller reads the repository that holds your cluster configuration from a
@@ -348,11 +345,10 @@ outputs = { self, wordpress-nix, ... }@inputs:
 `nix develop --impure` (or direnv with `use flake . --no-pure-eval`) gives a shell where
 `devenv up` runs the site as the platform does: the pinned core symlinked over the
 checkout's `wp-content/` (the managed-mode layout), the platform PHP 8.5 with
-`wp_mysql_parser`, `wp_d1_client` and `wp_turso`, FrankenPHP, the SQLite Anywhere `db.php`
+`wp_mysql_parser` and `wp_turso`, FrankenPHP, the SQLite Anywhere `db.php`
 drop-in and the platform mu-plugins — with `wp-cli`, the migration tools (`wp-import`
 runs `restore-core-keys → mysql-to-sqlite` on a dump), `wp-admin-user`, `wp-reset`, and
-Mailpit catching all mail. The same options build `packages.image`, `static-assets` and
-`worker`. Database shapes:
+Mailpit catching all mail. The same options build `packages.image`. Database shapes:
 
 | `database.type` | dev shell |
 |---|---|

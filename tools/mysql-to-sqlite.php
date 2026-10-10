@@ -490,7 +490,7 @@ if ( $failed > 0 ) {
 	}
 }
 
-// Report what landed, so the caller can sanity-check before loading into D1.
+// Report what landed, so the caller can sanity-check before loading it into the target database.
 try {
 	$result = $driver->query( 'SHOW TABLES' );
 	$tables = $result ? $result->fetchAll( PDO::FETCH_COLUMN ) : array();

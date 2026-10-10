@@ -12,7 +12,7 @@
 #   nix run github:Avunu/wordpress#mysql-to-sqlite -- dump.sql out.sqlite
 {
   pkgs,
-  # A PHP build with pdo_sqlite (the platform PHP targets D1 and does not
+  # A PHP build with pdo_sqlite (the platform PHP targets Turso and does not
   # bundle it; the converter writes a local SQLite file).
   php,
   # The driver's src/ directory (contains load.php).

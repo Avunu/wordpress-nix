@@ -1,8 +1,7 @@
 # The pinned WordPress core, extracted (fetchzip strips the leading
 # "wordpress/" directory). One place to bump the platform's core version:
-# the OCI image bake (modules/containers.nix) and the Worker-Assets static
-# tree (lib/static-assets.nix) both build from this, so the image and the
-# edge-served statics can never drift apart.
+# the OCI image bake (modules/containers.nix) builds from this, so every
+# image is pinned to the same core.
 {
   pkgs,
   version ? null,

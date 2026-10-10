@@ -8,7 +8,7 @@ usage() {
 Usage: wordpress-init [options] [target-dir]
 
 Bootstrap a wordpress-nix site: a thin repo (flake.nix, .envrc, .gitignore,
-wp-content/, the Cloudflare identity and CI callers) that the platform's dev
+wp-content/, the site identity and CI callers) that the platform's dev
 shell, image and NixOS module build from. Run it in:
 
   an empty directory        scaffolds a new site
@@ -127,7 +127,7 @@ print_plan() {
 report_placeholders() {
   local f
   local -a hits=()
-  for f in flake.nix wrangler.jsonc .github/workflows/deploy.yml .github/workflows/publish.yml; do
+  for f in flake.nix .github/workflows/publish.yml; do
     if [ -f "$f" ] && grep -qE 'CHANGE_?ME' "$f"; then
       hits+=("$f")
     fi

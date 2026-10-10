@@ -13,7 +13,7 @@ cleanup_staging() {
 # templates/site is also what `nix flake init -t` hands out, so it stays a
 # valid site on its own: its placeholders are real words (changeme-site-slug,
 # CHANGEME) rather than @TOKENS@. The slug is the only one we know the answer
-# to; the rest (Cloudflare IDs, URLs, the repo) are the user's, and are
+# to; the rest (deployment IDs, URLs, the repo) are the user's, and are
 # reported at the end.
 render_template() {
   STAGING="$(mktemp -d)"
@@ -23,7 +23,7 @@ render_template() {
   (
     cd "$STAGING"
     sed -i -e "s|changeme-site-slug|$name|g" -e "s|CHANGEME-site-slug|$name|g" \
-      flake.nix wrangler.jsonc
+      flake.nix
     if [ "$database" != sqlite ]; then
       sed -i "s|database.type = \"sqlite\";|database.type = \"$database\";|" flake.nix
     fi
@@ -116,7 +116,7 @@ install_gitignore_block() {
 # Turn it into an error here instead.
 verify_not_ignored() {
   local bad=0 p
-  for p in flake.nix .envrc wp-content wrangler.jsonc; do
+  for p in flake.nix .envrc wp-content; do
     [ -e "$p" ] || continue
     if git check-ignore -q -- "$p"; then
       printf '  \033[31m✗\033[0m  %s is excluded by .gitignore\n' "$p" >&2

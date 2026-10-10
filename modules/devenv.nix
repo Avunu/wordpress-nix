@@ -200,7 +200,7 @@ in
             defaultText = lib.literalExpression "config.wordpress-nix.siteName";
             description = "The image name.";
           };
-          d1 = mkOption {
+          sqlite = mkOption {
             type = types.bool;
             default = true;
             description = "Bundle the SQLite Anywhere plugin and its native extensions in the image.";
@@ -554,18 +554,8 @@ in
             php = cfg.php;
             imageName = cfg.image.name;
             wpContent = cfg.siteRoot + "/wp-content";
-            sqliteAnywhere = if cfg.image.d1 then sqliteAnywhere else null;
+            sqliteAnywhere = if cfg.image.sqlite then sqliteAnywhere else null;
             rustPkgs = inputs.nixpkgs.legacyPackages.${system};
-          };
-          # The Worker-Assets static tree (same pin + this wp-content) and the
-          # platform edge Worker bundle.
-          static-assets = import ../lib/static-assets.nix {
-            inherit pkgs;
-            wpContent = cfg.siteRoot + "/wp-content";
-          };
-          worker = import ../lib/worker.nix {
-            inherit pkgs;
-            d1ProxyWorkerSrc = sqliteAnywhere.lib.srcs.d1ProxyWorker;
           };
           default = image;
         };

@@ -11,7 +11,7 @@
     devenv.url = "github:cachix/devenv";
 
     # WordPress SQLite Anywhere: the SQLite Database Integration driver with
-    # the Turso and Cloudflare D1 backends, as one plugin with one db.php
+    # the Turso backend, as one plugin with one db.php
     # drop-in. The driver is a git submodule of that repo, hence the git URL
     # with submodules=1 (a GitHub tarball would not carry it).
     wordpress-sqlite-anywhere = {
@@ -53,7 +53,7 @@
 
       # Deploy WordPress directly on NixOS. See readme.md for usage.
       # The flake wiring injects the SQLite plugin flake + Rust toolchain pin,
-      # enabling `database.type = "d1"` / `"turso"` and the managed backend mode.
+      # enabling `database.type = "turso"` and the managed backend mode.
       nixosModules.default = import ./modules/nixos.nix {
         sqliteAnywhere = wordpress-sqlite-anywhere;
         rustNixpkgs = nixpkgs;
@@ -90,8 +90,8 @@
         mkSiteDocroot = import ./lib/mk-site-docroot.nix;
 
         # Per-site OCI image: the pinned core + the site repo's wp-content,
-        # with the D1 driver stack included by default. The primary builder
-        # for site flakes; this flake's own package variants use it too.
+        # with the SQLite Anywhere driver stack included by default. The primary
+        # builder for site flakes; this flake's own package variants use it too.
         # The SQLite plugin requires PHP 8.5, hence the default.
         #   mkSiteImage { inherit pkgs; imageName = "site-foo"; wpContent = ./wp-content; }
         mkSiteImage =
@@ -103,7 +103,7 @@
             wpContent ? null,
             plugins ? { },
             themes ? { },
-            d1 ? true,
+            sqlite ? true,
             wordpressVersion ? null,
             wordpressHash ? null,
           }:
@@ -119,32 +119,15 @@
               wordpressVersion
               wordpressHash
               ;
-            sqliteAnywhere = if d1 then wordpress-sqlite-anywhere else null;
+            sqliteAnywhere = if sqlite then wordpress-sqlite-anywhere else null;
             rustPkgs = nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system};
           };
-
-        # The Worker-Assets static tree for the same pinned core + wp-content.
-        #   mkStaticAssets { inherit pkgs; wpContent = ./wp-content; }
-        mkStaticAssets = import ./lib/static-assets.nix;
 
         # The Turso snapshot publisher, from the pinned plugin flake.
         #   mkTursoPublisher { inherit pkgs; }
         mkTursoPublisher =
           { pkgs, rustPkgs ? pkgs }:
           wordpress-sqlite-anywhere.lib.mkTursoPublisher { inherit pkgs rustPkgs; };
-
-        # The bundled edge Worker (site-agnostic; one artifact per platform
-        # version). `entry` is the escape hatch for site-custom routes.
-        #   mkSiteWorker { inherit pkgs; }
-        mkSiteWorker =
-          {
-            pkgs,
-            entry ? null,
-          }:
-          import ./lib/worker.nix {
-            inherit pkgs entry;
-            d1ProxyWorkerSrc = wordpress-sqlite-anywhere.lib.srcs.d1ProxyWorker;
-          };
       };
 
       # `nix flake init -t github:Avunu/wordpress-nix#site` scaffolds a new
@@ -153,7 +136,7 @@
       # existing WordPress install in place (see lib/init.nix).
       templates.site = {
         path = ./templates/site;
-        description = "A WordPress-on-Cloudflare site: wp-content payload, wrangler identity, flake pin, CI caller";
+        description = "A WordPress site: wp-content payload, flake pin, CI caller";
       };
     }
     // flake-utils.lib.eachDefaultSystem (
@@ -164,9 +147,8 @@
           php: imageName:
           self.lib.mkSiteImage {
             inherit pkgs php imageName;
-            d1 = false;
+            sqlite = false;
           };
-        mkD1Image = php: imageName: self.lib.mkSiteImage { inherit pkgs php imageName; };
       in
       {
         # `nix run github:Avunu/wordpress-nix` bootstraps the current directory
@@ -192,19 +174,12 @@
           wordpress-php83 = mkImage pkgs.php83 "wordpress-php83";
           wordpress-php84 = mkImage pkgs.php84 "wordpress-php84";
           wordpress-php85 = mkImage pkgs.php85 "wordpress-php85";
-          # Cloudflare D1 variant: bundles the WordPress SQLite Anywhere plugin,
-          # its db.php drop-in, and the native wp_mysql_parser + wp_d1_client
-          # extensions. Configure with WP_D1_PROXY_URL. PHP 8.5: the plugin
-          # requires it.
-          wordpress-d1-php85 = mkD1Image pkgs.php85 "wordpress-d1-php85";
-          # The bundled site-agnostic edge Worker.
-          worker = self.lib.mkSiteWorker { inherit pkgs; };
           # Migration: replay a MySQL dump through the driver into SQLite.
           mysql-to-sqlite =
             let
               # A plain build: this runs once per migration on an operator's
               # machine, so skip the slow clang/LTO pass. pdo_sqlite is not in
-              # the platform extension set (the runtime targets D1).
+              # the platform extension set (the runtime targets Turso).
               php = import ./lib/php.nix {
                 inherit pkgs;
                 php = pkgs.php85;
@@ -236,11 +211,6 @@
           # replica cannot be read by pdo_sqlite, so this hands PHP a plain
           # SQLite file instead. See the package's README.
           turso-snapshot-publisher = self.lib.mkTursoPublisher { inherit pkgs; };
-          # The pinned wordpress-sqlite-anywhere source, materializable in CI
-          # (worker tests alias @wp-sqlite/d1-proxy-worker from it).
-          sqlite-driver-src = pkgs.runCommandLocal "sqlite-driver-src" { } ''
-            ln -s ${wordpress-sqlite-anywhere} $out
-          '';
           default = self.packages.${system}.wordpress-php83;
         };
 
@@ -248,7 +218,6 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             nodejs_22
-            wrangler
             gum
             skopeo
           ];

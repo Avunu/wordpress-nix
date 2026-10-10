@@ -11,15 +11,14 @@
   imageName,
   tag ? "latest",
   # The wordpress-sqlite-anywhere flake. When set, the image bundles the
-  # plugin (with its db.php drop-in) and the native wp_mysql_parser +
-  # wp_d1_client extensions; the entrypoint installs both for D1 sites.
+  # plugin (with its db.php drop-in) and the native extensions; the entrypoint
+  # installs the plugin for Turso sites.
   sqliteAnywhere ? null,
   # Package set providing the Rust toolchain for the native extensions.
   rustPkgs ? pkgs,
   # WordPress core is baked into the image (at /usr/src/wordpress) so the
   # image needs no runtime downloads, and so the exact static-asset set is
-  # known (lib/static-assets.nix builds the Worker-Assets tree from the same
-  # pin). Defaults live in lib/wordpress-core.nix.
+  # Defaults live in lib/wordpress-core.nix.
   wordpressVersion ? null,
   wordpressHash ? null,
   # The site's wp-content tree (typically a site repo's ./wp-content),
@@ -156,9 +155,9 @@ ${graftInto "themes" themes}
     cp -r ${../mu-plugins}/. mu-plugins/
 ${
   pkgs.lib.optionalString (sqlitePlugin != null) ''
-    # Bundle the WordPress SQLite Anywhere plugin (driver + D1 and Turso
-    # backends + db.php drop-in). The entrypoint installs it into the docroot
-    # when WP_D1_PROXY_URL is set.
+    # Bundle the WordPress SQLite Anywhere plugin (driver + Turso backend +
+    # db.php drop-in). The entrypoint installs it into the docroot, and the
+    # db.php drop-in when WP_TURSO_URL is set.
     mkdir -p wordpress-plugins
     cp -r ${sqlitePlugin} wordpress-plugins/wordpress-sqlite-anywhere
     chmod -R u+w wordpress-plugins

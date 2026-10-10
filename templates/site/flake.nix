@@ -17,7 +17,6 @@
   # This flake exposes:
   #   devShells.<system>.default   — `nix develop` / `devenv up`: the site on the platform stack
   #   packages.<system>.image      — the site's OCI image (pinned core + this wp-content)
-  #   packages.<system>.static-assets, .worker — the Cloudflare edge pieces
   #   nixosModules.default         — the site on a NixOS host (managed source mode)
 
   outputs =

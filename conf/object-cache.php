@@ -9,8 +9,8 @@
  * Persistent groups are stored in APCu (shared across all requests handled
  * by a container instance); non-persistent groups live only for the current
  * request. This dramatically reduces the number of database round trips,
- * which is the dominant cost when the database is remote (e.g. Cloudflare
- * D1 over the SQLite driver's HTTP transport).
+ * which is the dominant cost when the database is remote (e.g. Turso over
+ * the SQLite driver's HTTP transport).
  *
  * Disable by setting the environment variable WORDPRESS_OBJECT_CACHE=none,
  * which prevents the image from installing this drop-in.

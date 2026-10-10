@@ -6,9 +6,9 @@ updates:
   # GitHub Actions used by the workflows in .github/workflows.
   #
   # Dependabot only scans the repo-root .github/workflows, so the site caller template
-  # in templates/site/.github/workflows/deploy.yml is *not* covered — it is scaffolding
+  # in templates/site/.github/workflows/publish.yml is *not* covered — it is scaffolding
   # copied into site repos (which get their own Dependabot), and its only pin is the
-  # Avunu/wordpress reusable workflow ref. Bump that by hand when the pipeline moves.
+  # Avunu/wordpress-nix reusable workflow ref. Bump that by hand when the pipeline moves.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -19,30 +19,11 @@ updates:
       github-actions:
         patterns: ["*"]
 
-  # The platform edge Worker (worker/package.json + worker/package-lock.json).
-  # Bumps here trigger the `worker` workflow, which runs the vitest suite.
-  # vitest stays on the major @cloudflare/vitest-pool-workers declares as its
-  # peer (4.x for 0.22): Dependabot's grouped bump does not check peer ranges,
-  # and a vitest major ahead of the pool leaves `npm ci` unable to resolve.
-  - package-ecosystem: npm
-    directory: /worker
-    schedule:
-      interval: daily
-    commit-message:
-      prefix: chore
-    groups:
-      npm:
-        patterns: ["*"]
-    ignore:
-      - dependency-name: vitest
-        update-types: ["version-update:semver-major"]
-
   # Nix flake inputs — nixpkgs, flake-utils, and the pinned
   # wordpress-sqlite-anywhere plugin. Dependabot reads flake.lock directly
   # (schema v7) and covers the `git+https` plugin input as well as the `github:` ones.
   #
-  # A lock bump touches flake.lock, which is in the `worker` workflow's path filter, so
-  # these PRs run the worker suite as well as the image build.
+  # A lock bump touches flake.lock, so these PRs run the image build (oci).
   - package-ecosystem: nix
     directory: /
     schedule:

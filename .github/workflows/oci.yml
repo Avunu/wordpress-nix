@@ -24,13 +24,13 @@ jobs:
 
     - name: Build Docker Images
       run: |
-        nix build .#wordpress-php82 .#wordpress-php83 .#wordpress-php84 .#wordpress-php85 .#wordpress-d1-php85
+        nix build .#wordpress-php82 .#wordpress-php83 .#wordpress-php84 .#wordpress-php85
         for image in result result-*; do
           docker load < "$image"
         done
 
     # Publish only from `main`. On a pull_request the build above is the whole point —
-    # a PR must never overwrite the `latest`/`d1` tags, and Dependabot PRs run with a
+    # a PR must never overwrite the `latest` tag, and Dependabot PRs run with a
     # read-only GITHUB_TOKEN (no `packages: write`), so pushing there would fail the
     # check and block auto-merge.
     - name: Log in to GitHub Container Registry
@@ -66,7 +66,7 @@ jobs:
         
         for IMAGE in "${IMAGES[@]}"; do
           # Derive the tag from the image name: "wordpress-php83:latest"
-          # becomes "php83", "wordpress-d1-php85:latest" becomes "d1-php85".
+          # becomes "php83".
           TAG=$(echo $IMAGE | sed -e 's/^wordpress-//' -e 's/:.*$//')
           FULL_IMAGE_ID=$IMAGE_ID:$TAG
           
@@ -77,5 +77,3 @@ jobs:
         # Tag the default aliases
         docker tag $IMAGE_ID:php83 $IMAGE_ID:latest
         docker push $IMAGE_ID:latest
-        docker tag $IMAGE_ID:d1-php85 $IMAGE_ID:d1
-        docker push $IMAGE_ID:d1
