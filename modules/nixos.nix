@@ -1245,6 +1245,18 @@ in
   };
 
   config = mkIf cfg.enable {
+    # The project's binary cache: the optimized PHP and the native extensions, built by
+    # .github/workflows/cache.yml. Adding a substituter is a trust decision: whoever holds
+    # this cache's signing key can put any store path on this host. The keypair is held by
+    # Cachix, so no private key lives in this repository. Priority 41 sits behind
+    # cache.nixos.org (40). Same key as flake.nix's nixConfig; keep them equal.
+    nix.settings = {
+      substituters = [ "https://wordpress-nix.cachix.org?priority=41" ];
+      trusted-public-keys = [
+        "wordpress-nix.cachix.org-1:CYaSELCIUp9U26Ko+ajzE7M+l/dtiG5hBLEtvFXLUeA="
+      ];
+    };
+
     assertions = [
       {
         assertion = cfg.source.type != "git" || cfg.source.path != null;

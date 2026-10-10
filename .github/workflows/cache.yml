@@ -1,0 +1,105 @@
+name: Binary cache
+
+# Fills the project's binary cache (wordpress-nix.cachix.org) with what cache.nixos.org cannot serve:
+# the optimized PHP builds (lib/php.nix), the native wp_turso and wp_mysql_parser extensions (Rust,
+# built from source by the plugin flake) and the tools this repository builds. Flakes and NixOS hosts
+# that depend on wordpress-nix substitute from the cache instead of compiling them (flake.nix nixConfig,
+# modules/nixos.nix, templates/site/flake.nix).
+#
+# It publishes only from `main` (push, the nightly schedule, a manual run) and never from a pull request.
+# Whoever holds CACHIX_AUTH_TOKEN can upload a signed NAR under ANY store path, and input-addressed paths
+# are not checked against their contents, so a token exposed to pull-request code could plant a path that
+# every consumer later substitutes as trusted. Keep the token in Actions secrets only.
+#
+# Merged code publishes soon enough: the push to `main` and the nightly run both finish well before a
+# consumer's next update.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# A publish is never cancelled half-way; the next run simply pushes what is still missing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # magic-nix-cache scopes its GitHub Actions cache entries with this.
+  id-token: write
+
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # `determinate: false` installs upstream Nix. The flake's nixConfig is accepted so the
+      # build reads the project's own cache too.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          determinate: false
+          extra-conf: |
+            accept-flake-config = true
+
+      # Backs /nix/store with the GitHub Actions cache. `use-flakehub: false`: this repo is not a
+      # FlakeHub flake. Its post-build hook never pushes to Cachix; the explicit push below does.
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          use-flakehub: false
+
+      # Installs the `cachix` binary and configures the cache as a substituter. Pushing is done by hand
+      # below: the action's daemon mode would push every path built during the job, build-time-only
+      # inputs included.
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: wordpress-nix
+          skipPush: true
+
+      # Everything the packages are built from is in this flake's lock, so the outputs are reproducible
+      # and what a consumer's own build would produce.
+      - name: Build the packages
+        run: |
+          set -euo pipefail
+          nix build -L --no-link --print-out-paths \
+            .#wordpress-php82 .#wordpress-php83 .#wordpress-php84 .#wordpress-php85 \
+            .#wordpress-init .#turso-snapshot-publisher .#mysql-to-sqlite \
+            .#sqlite-to-turso .#restore-core-keys .#audit-mysql-dump > outputs.txt
+          cat outputs.txt
+
+      # What only we can serve. A path that arrived from any cache carries that cache's signature, so an
+      # EMPTY `signatures` array is the set cache.nixos.org cannot provide. `nix path-info --json` has had
+      # three shapes across Nix versions; normalise them so the query reads the same on any runner.
+      - name: Determine what cache.nixos.org cannot serve
+        run: |
+          set -euo pipefail
+          mapfile -t outs < outputs.txt
+          nix path-info --json --recursive "${outs[@]}" \
+            | jq 'if type == "array" then .
+                  elif has("info") then .storeDir as $d | .info | to_entries
+                    | map({path: ($d + "/" + .key)} + .value)
+                  else to_entries | map({path: .key} + .value) end' \
+            | jq -r '.[] | select((.signatures // []) | length == 0) | .path' \
+            | sort -u > unsigned.txt
+          echo "$(grep -c . unsigned.txt || true) paths only this cache can serve:"
+          sed 's|^/nix/store/[a-z0-9]*-|  |' unsigned.txt
+
+      # Paths go as ARGUMENTS (`cachix push` documents only `CACHE-NAME [PATHS...]`); `xargs -r` makes an
+      # empty set a no-op. Cachix subtracts its configured upstream caches server-side, so nothing is
+      # uploaded twice.
+      #
+      # Never on a pull request: the step and its token only exist on runs of `main`.
+      - name: Publish to Cachix
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "::error::CACHIX_AUTH_TOKEN is not set, so nothing was published."
+            exit 1
+          fi
+          xargs -r cachix push wordpress-nix < unsigned.txt

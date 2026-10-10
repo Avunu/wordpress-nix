@@ -435,6 +435,14 @@ GITHUB_TOKEN=your_personal_access_token
 
 The included GitHub Actions workflow automatically builds and pushes images to ghcr.io on pushes to the main branch.
 
+### Binary cache
+
+Compiling the optimized PHP and the native `wp_turso` / `wp_mysql_parser` extensions (Rust) is slow, so CI fills [wordpress-nix.cachix.org](https://wordpress-nix.cachix.org). The `Binary cache` workflow (`.github/workflows/cache.yml`) builds the packages on every push to `main` and nightly, and pushes whatever cache.nixos.org cannot serve. It never publishes from a pull request.
+
+Consumers substitute from the cache automatically: `flake.nix` and `templates/site/flake.nix` declare it in `nixConfig` (Nix asks once, or accept with `--accept-flake-config`), and importing `nixosModules.default` adds it to `nix.settings` on the host.
+
+Publishing needs the `CACHIX_AUTH_TOKEN` secret under Actions secrets only. Keep it out of the Dependabot secret store, since the token could otherwise reach pull-request code.
+
 ## Contributing
 
 Contributions are welcome! Please submit pull requests with any improvements or bug fixes.

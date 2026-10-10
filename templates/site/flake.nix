@@ -7,10 +7,17 @@
     nixpkgs.follows = "wordpress-nix/nixpkgs";
   };
 
+  # The platform's caches: devenv for the dev shell, wordpress-nix for its
+  # optimized PHP and native extensions. Nix only honours a flake's own nixConfig,
+  # so a site repo declares them here. Same keys as wordpress-nix's flake.nix.
   nixConfig = {
-    extra-substituters = [ "https://devenv.cachix.org" ];
+    extra-substituters = [
+      "https://devenv.cachix.org"
+      "https://wordpress-nix.cachix.org"
+    ];
     extra-trusted-public-keys = [
       "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+      "wordpress-nix.cachix.org-1:CYaSELCIUp9U26Ko+ajzE7M+l/dtiG5hBLEtvFXLUeA="
     ];
   };
 

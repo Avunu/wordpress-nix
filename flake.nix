@@ -30,10 +30,18 @@
     };
   };
 
+  # Nix honours this for a trusted user who accepts it (a prompt the first time, or
+  # `--accept-flake-config`); everyone else gets a warning and a local build. The wordpress-nix
+  # cache holds the optimized PHP builds and the native extensions, which cache.nixos.org lacks.
+  # Same key as modules/nixos.nix and templates/site/flake.nix; keep them equal.
   nixConfig = {
-    extra-substituters = [ "https://devenv.cachix.org" ];
+    extra-substituters = [
+      "https://devenv.cachix.org"
+      "https://wordpress-nix.cachix.org"
+    ];
     extra-trusted-public-keys = [
       "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+      "wordpress-nix.cachix.org-1:CYaSELCIUp9U26Ko+ajzE7M+l/dtiG5hBLEtvFXLUeA="
     ];
   };
 

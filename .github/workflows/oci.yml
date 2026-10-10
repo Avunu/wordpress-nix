@@ -12,15 +12,26 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # magic-nix-cache scopes its GitHub Actions cache entries with this.
+      id-token: write
 
     steps:
     - uses: actions/checkout@v7
 
+    # `determinate: false` installs upstream Nix, not Determinate's distribution.
+    # The flake's nixConfig is accepted for the same reason as in checks.yml.
     - name: Install Nix
-      uses: cachix/install-nix-action@v31
+      uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       with:
-        extra_nix_config: |
-          experimental-features = nix-command flakes
+        determinate: false
+        extra-conf: |
+          accept-flake-config = true
+
+    # Backs /nix/store with the GitHub Actions cache, so unchanged derivations are not rebuilt
+    # across runs. `use-flakehub: false`: this repo is not a FlakeHub flake.
+    - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      with:
+        use-flakehub: false
 
     - name: Build Docker Images
       run: |
