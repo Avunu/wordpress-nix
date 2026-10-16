@@ -20,10 +20,9 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    # Updates of the documentation site's packages (docs-site/) and of the commit pin of its shared
-    # workflows (github-actions pull requests) are reviewed by a person: a merge to the default branch
-    # publishes the site.
-    if: ${{ github.actor == 'dependabot[bot]' && !startsWith(github.head_ref, 'dependabot/npm_and_yarn/docs-site') && !startsWith(github.head_ref, 'dependabot/github_actions/') }}
+    # Updates of the actions pinned in the workflows (github-actions pull requests), the shared
+    # documentation check of Avunu/site-docs included, are reviewed by a person.
+    if: ${{ github.actor == 'dependabot[bot]' && !startsWith(github.head_ref, 'dependabot/github_actions/') }}
     steps:
       - name: Enable auto-merge
         run: gh pr merge --auto --squash "$PR_URL"
