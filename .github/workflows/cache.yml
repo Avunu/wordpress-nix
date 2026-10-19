@@ -32,13 +32,18 @@ permissions:
 
 jobs:
   cache:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","nixos"]') }}
+    # The installer's extra-conf only reaches GitHub-hosted runners; on the self-hosted
+    # NixOS runner (a trusted Nix user) the setting comes from NIX_CONFIG.
+    env:
+      NIX_CONFIG: accept-flake-config = true
     steps:
       - uses: actions/checkout@v7
 
       # `determinate: false` installs upstream Nix. The flake's nixConfig is accepted so the
       # build reads the project's own cache too.
       - name: Install Nix
+        if: runner.environment == 'github-hosted'
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           determinate: false
@@ -48,6 +53,7 @@ jobs:
       # Backs /nix/store with the GitHub Actions cache. `use-flakehub: false`: this repo is not a
       # FlakeHub flake. Its post-build hook never pushes to Cachix; the explicit push below does.
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        if: runner.environment == 'github-hosted'
         with:
           use-flakehub: false
 
