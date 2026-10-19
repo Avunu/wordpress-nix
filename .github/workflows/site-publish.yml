@@ -45,7 +45,7 @@ permissions: {}
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","nixos"]') }}
     steps:
       - name: Ask the cluster to serve this commit
         env:
