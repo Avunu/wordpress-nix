@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # dependabot-auto-merge.yml's update-branches dispatches the build on a branch it updated
+  # with GITHUB_TOKEN, whose push starts no workflow. Publishing stays push-only.
+  workflow_dispatch:
 
 jobs:
   build:
