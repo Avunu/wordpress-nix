@@ -1,7 +1,8 @@
 version: 2
 
-# Keeps every ecosystem in this repo up to date, flake.lock included. PRs auto-merge
-# once the required checks go green — see .github/workflows/dependabot-auto-merge.yml.
+# Keeps every ecosystem in this repo up to date, flake.lock included. PRs, action bumps
+# included, auto-merge once the required checks go green and are kept up to date with
+# main — see .github/workflows/dependabot-auto-merge.yml.
 updates:
   # GitHub Actions used by the workflows in .github/workflows.
   #
