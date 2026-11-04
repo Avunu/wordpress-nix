@@ -41,7 +41,7 @@ jobs:
 
     - name: Build Docker Images
       run: |
-        nix build .#wordpress-php82 .#wordpress-php83 .#wordpress-php84 .#wordpress-php85
+        nix build .#wordpress-php83 .#wordpress-php84 .#wordpress-php85
         for image in result result-*; do
           docker load < "$image"
         done

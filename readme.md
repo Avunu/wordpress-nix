@@ -13,7 +13,7 @@ Both paths share the same optimized ZTS PHP build (`lib/php.nix`) and FrankenPHP
 
 ## Features
 
-* PHP 8.2 / 8.3 / 8.4, selectable per deployment (`services.wordpress-nix.php`).
+* PHP 8.3 / 8.4 / 8.5, selectable per deployment (`services.wordpress-nix.php`).
 * [FrankenPHP](https://frankenphp.dev/) as the server; standalone Caddy ACME TLS on NixOS.
 * Optimized builds with CPU-specific flags (auto-gated per architecture; opt-out via `phpOptimize`).
 * Two site-source modes on NixOS:

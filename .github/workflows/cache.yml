@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           nix build -L --no-link --print-out-paths \
-            .#wordpress-php82 .#wordpress-php83 .#wordpress-php84 .#wordpress-php85 \
+            .#wordpress-php83 .#wordpress-php84 .#wordpress-php85 \
             .#wordpress-init .#turso-snapshot-publisher .#mysql-to-sqlite \
             .#sqlite-to-turso .#restore-core-keys .#audit-mysql-dump > outputs.txt
           cat outputs.txt
