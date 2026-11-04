@@ -178,7 +178,6 @@
         packages = {
           # The bootstrapper behind `nix run`.
           wordpress-init = import ./lib/init.nix { inherit pkgs; };
-          wordpress-php82 = mkImage pkgs.php82 "wordpress-php82";
           wordpress-php83 = mkImage pkgs.php83 "wordpress-php83";
           wordpress-php84 = mkImage pkgs.php84 "wordpress-php84";
           wordpress-php85 = mkImage pkgs.php85 "wordpress-php85";
