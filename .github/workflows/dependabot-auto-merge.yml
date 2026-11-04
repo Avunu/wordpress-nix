@@ -1,31 +1,60 @@
 name: Dependabot auto-merge
 
-# Enables auto-merge on every Dependabot PR, major-version bumps included. The
-# gate is the test suite, not the update type: GitHub merges once the branch is
-# mergeable and all *required* status checks pass, so a bump that breaks
-# something holds its PR open instead of landing on main.
+# Dependabot pull requests, through python-devops-nix's reusable workflows (its
+# docs/conventions.md, CI) with their default policy: every one auto-merges, whatever
+# its ecosystem or update type, major bumps and github-actions bumps included. The gate
+# is the test suite, not the update type: GitHub merges once the branch is mergeable and
+# every *required* status check passes, so a bump that breaks something holds its PR
+# open instead of landing on main. Dependabot's github-actions entry moves the pins below.
 #
-# That makes the required checks load-bearing. Without them GitHub considers the
-# PR mergeable the instant it opens and this merges on nothing.
+# That makes the required checks load-bearing. Without them GitHub considers the PR
+# mergeable the instant it opens and this merges on nothing.
+#
+# update-branches brings each Dependabot pull request that falls behind `main` up to date,
+# after each push to `main` and daily: `@dependabot rebase` while it has only Dependabot's
+# commits, else the update-branch API.
+#
+# The org's GitHub App (the variable AVUNU_CI_APP_ID, or a Dependabot secret of that name,
+# and the secret AVUNU_CI_PRIVATE_KEY) enables auto-merge and updates the branches, so a
+# merge raises a push that starts oci.yml on `main` (which publishes the images), and an
+# updated branch starts its build. Without it, GITHUB_TOKEN, and oci.yml is dispatched on
+# an updated branch.
 #
 # Requires (one-time, in repo settings):
 #   • Settings → General → Pull Requests → "Allow auto-merge"
 #   • Settings → Rules → ruleset on `main` requiring the "build" (oci) check
-on: pull_request
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   auto-merge:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted","nixos"]') }}
-    # Updates of the actions pinned in the workflows (github-actions pull requests), the shared
-    # documentation check of Avunu/site-docs included, are reviewed by a person.
-    if: ${{ github.actor == 'dependabot[bot]' && !startsWith(github.head_ref, 'dependabot/github_actions/') }}
-    steps:
-      - name: Enable auto-merge
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # The PR's author, not github.actor (which a re-run by a person changes).
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write # gh pr merge --auto
+      pull-requests: write # gh pr merge --auto
+    uses: Avunu/python-devops-nix/.github/workflows/dependabot-auto-merge.yml@64a23eede77e3b9fcb2ac1e785dbfcde6fcd1bda # python-devops-nix#52 (unreleased)
+    # A Dependabot run sees only Dependabot secrets: the App's ID may be one too.
+    secrets:
+      APP_ID: ${{ vars.AVUNU_CI_APP_ID || secrets.AVUNU_CI_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.AVUNU_CI_PRIVATE_KEY }}
+
+  update-branches:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write # update-branch without the App
+      pull-requests: write # comment `@dependabot rebase`, update-branch
+      actions: write # without the App, dispatch oci.yml on the new head
+    uses: Avunu/python-devops-nix/.github/workflows/dependabot-update-branches.yml@64a23eede77e3b9fcb2ac1e785dbfcde6fcd1bda # python-devops-nix#52 (unreleased)
+    with:
+      dispatch: oci.yml
+    secrets:
+      APP_ID: ${{ vars.AVUNU_CI_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.AVUNU_CI_PRIVATE_KEY }}
