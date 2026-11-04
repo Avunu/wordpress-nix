@@ -15,7 +15,7 @@ fi
 
 # Set variables
 REPOSITORY="ghcr.io/avunu/wordpress"
-ALL_PHP_VERSIONS=("php82" "php83" "php84")
+ALL_PHP_VERSIONS=("php83" "php84" "php85")
 DEFAULT_PHP_VERSION="php83"
 
 # Check if a specific PHP version is provided as an argument
