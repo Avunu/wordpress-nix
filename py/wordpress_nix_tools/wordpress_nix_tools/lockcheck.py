@@ -161,7 +161,9 @@ def check(
         elif name not in base and base_lock is not None:
             v.reviews.append(f"{name} {p.get('version', '?')}: a package the base lock does not have")
         elif name in base:
-            why = update_review(name, str(base[name].get("version", "")), str(p.get("version", "")), woocommerce=woocommerce)
+            why = update_review(
+                name, str(base[name].get("version", "")), str(p.get("version", "")), woocommerce=woocommerce
+            )
             if why:
                 v.reviews.append(f"{name}: {why}")
     if head_hash is not None:

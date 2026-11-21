@@ -157,7 +157,8 @@ def test_media_adopt_requires_the_bucket(fake):
 
 def strip_ids(records):
     return sorted(
-        ({k: v for k, v in r.items() if k != "id"} for r in records), key=lambda r: (r["name"], r["type"], str(r.get("content", "")))
+        ({k: v for k, v in r.items() if k != "id"} for r in records),
+        key=lambda r: (r["name"], r["type"], str(r.get("content", ""))),
     )
 
 

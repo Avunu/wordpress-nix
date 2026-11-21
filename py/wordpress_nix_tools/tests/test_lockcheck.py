@@ -144,7 +144,9 @@ def test_any_major_needs_review(repo):
     assert v.decision() == "needs-review" and "a major update" in v.reasons()[0], v.reasons()
     minor = bump(base, "wp-plugin/two-factor", "0.11.0", "https://downloads.wordpress.org/plugin/two-factor.0.11.0.zip")
     assert lockcheck.check(base, minor, HASH).decision() == "ok"
-    plugin_major = bump(base, "wp-plugin/two-factor", "1.0.0", "https://downloads.wordpress.org/plugin/two-factor.1.0.0.zip")
+    plugin_major = bump(
+        base, "wp-plugin/two-factor", "1.0.0", "https://downloads.wordpress.org/plugin/two-factor.1.0.0.zip"
+    )
     assert lockcheck.check(base, plugin_major, HASH).decision() == "needs-review"
 
 

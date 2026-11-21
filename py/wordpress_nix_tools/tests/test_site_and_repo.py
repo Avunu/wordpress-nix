@@ -131,7 +131,9 @@ def test_delta_queries_only_the_tables_the_site_has():
     sql = verify.delta_sql("wpx_", since, {"wpx_posts", "wpx_comments"})
     assert "fluentform" not in sql and "give_donationmeta" not in sql
     assert "`wpx_posts` WHERE `post_date_gmt` > '2026-11-21 10:00:00' AND `post_type` = 'give_payment'" in sql
-    assert "fluentform_submissions` WHERE `created_at`" in verify.delta_sql("wpx_", since, {"wpx_fluentform_submissions"})
+    assert "fluentform_submissions` WHERE `created_at`" in verify.delta_sql(
+        "wpx_", since, {"wpx_fluentform_submissions"}
+    )
 
     class Args:
         site_root = "/nonexistent"
