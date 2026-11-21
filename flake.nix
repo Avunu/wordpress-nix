@@ -212,6 +212,9 @@
           # The migration's gate on an untrusted dump: refuse, or strip, the
           # objects that would EXECUTE on the new server once restored.
           audit-mysql-dump = import ./lib/audit-mysql-dump.nix { inherit pkgs; };
+          # A built Bedrock tree against wordpress.org's published checksums
+          # (core, wp-plugin/*) and locked zips (wp-theme/*). Needs the network.
+          verify-wp-checksums = import ./lib/verify-wp-checksums.nix { inherit pkgs; };
           # Migration, step two: load the SQLite file into a Turso database.
           sqlite-to-turso = import ./lib/sqlite-to-turso.nix { inherit pkgs; };
           # The Turso snapshot publisher: the front end's read path. A live Turso
