@@ -1,0 +1,41 @@
+# wordpress-nix-tools: one self-contained distribution, import name wordpress_nix_tools,
+# console script `wordpress-nix`. It serves wordpress-init (lib/init.nix runs
+# `python -m wordpress_nix_tools.wordpress_init`), the conversion commands, and the
+# no-Nix CI jobs, which install it with
+#   uv tool install "wordpress-nix-tools @ git+https://github.com/Avunu/wordpress@<rev>#subdirectory=py/wordpress_nix_tools"
+# Stdlib plus standards-core: the conversion talks to SSH, rclone, git, composer and
+# nix as subprocesses, and to the Cloudflare and wordpress.org APIs with urllib.
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "wordpress-nix-tools"
+version = "3.0.0"
+description = "wordpress-nix's conversion and standards tools: wordpress-init, the wordpress-nix CLI and the site CI steps"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    # The engine (DESIGN.md §10.3). Its sha equals flake.lock's python-devops-nix rev
+    # once the relock hooks (ci.relock_patch_paths, ci.verify_relock) are released.
+    "standards-core @ git+https://github.com/Avunu/python-devops-nix@d3a87609e2fd4510dfe2e11a75f219f589e2659b#subdirectory=standards",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+wordpress-nix = "wordpress_nix_tools.cli:main"
+# wordpress-init has no script here: lib/init.nix runs `python -m
+# wordpress_nix_tools.wordpress_init` with the configuration it bakes, as frappe-init does.
+
+[project.urls]
+Documentation = "https://github.com/Avunu/wordpress/tree/main/docs"
+Source = "https://github.com/Avunu/wordpress/tree/main/py/wordpress_nix_tools"
+
+[tool.flit.module]
+name = "wordpress_nix_tools"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

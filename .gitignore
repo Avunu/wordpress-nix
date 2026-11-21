@@ -9,3 +9,4 @@ result*
 workspace.code-workspace
 __pycache__/
 *.pyc
+.pytest_cache/
