@@ -96,8 +96,14 @@ adds or changes:
 | `roots/wordpress-no-content` | `https://downloads.w.org/release/wordpress-<version>-no-content.zip`, with the lock's `shasum` |
 | anything else (Packagist) | `https://api.github.com/repos/<o>/<r>/zipball/<ref>` or `https://codeload.github.com/<o>/<r>/legacy.zip/<ref>`, where `<o>/<r>` is `source.url`'s and `<ref>` is `source.reference` |
 
-A mismatch or another host is a `reject`: nothing is pushed and the PR is held.
-A package the lock adds or removes is `needs-review`. `nix/vendor-hash` must be
+A mismatch is a `reject`: nothing is pushed and the PR is held. That is a
+wordpress.org or core URL naming another slug, version or host, a core dist
+without its `shasum`, or a Packagist package from GitHub whose dist is not its
+source's own zipball (another owner, repository, reference or host). A
+Packagist package not on GitHub at all (its source on GitLab or Bitbucket, a
+`path` or `artifact` dist) is another host, which plan §4.4 sends to
+`needs-review`: the relock is pushed, CI runs on the real change, and a person
+reads it. So is a package the lock adds or removes. `nix/vendor-hash` must be
 one SRI hash, never `lib.fakeHash`.
 
 ### The decision table
@@ -174,9 +180,10 @@ Then, by hand (M5a's exit criteria in the v3 plan):
 3. Wait for Dependabot's first Composer PR, or pin an older `wp-plugin/*` to
    provoke one; it must relock, auto-merge and upload to the cache with no
    person acting. Likewise a github-actions PR and a `php-libs` group PR.
-4. Refusals: push a branch whose `composer.lock` names a foreign dist host, and
-   one whose Packagist dist owner differs from its source; `verify-relock` must
-   refuse both (selftest-scaffold covers the first offline of GitHub).
+4. Refusals: push a branch whose `composer.lock` names a foreign dist host for a
+   `wp-plugin/*`, and one whose Packagist dist owner differs from its source;
+   `verify-relock` must refuse both (selftest-scaffold covers the first offline
+   of GitHub).
 5. Lock a known-vulnerable plugin version: `ci / audit` fails on the PR, and
    `site-audit`'s daily run opens the *Vulnerable packages* issue.
 6. Settle whether Dependabot needs a credential-less `registries:` entry for WP
