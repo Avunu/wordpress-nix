@@ -236,6 +236,12 @@
             };
             # wordpress-nix-tools' pytest suite (its check phase).
             tools = self.packages.${system}.wordpress-nix-tools;
+            # The template's managed files are what `wordpress-nix sync` renders.
+            site-template-sync = import ./tests/site-template-sync.nix {
+              inherit pkgs;
+              checks = mk;
+              cli = self.packages.${system}.wordpress-nix;
+            };
             # `wordpress-init --migrate` over a synthetic classic install, offline:
             # dispositions, the backup, idempotency, the guard rails' exit codes,
             # and the lock step's ordering against stand-in composer and nix.

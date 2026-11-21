@@ -1,0 +1,13 @@
+# wordpress-nix's standards for this site repository: `wordpress-init --sync` (or
+# `nix run .#wordpress-nix -- sync --write`) renders the managed files from it, and
+# the reusable workflows read it. `deployment` is the wordpress-site profile: Composer
+# Dependabot with the relock pipeline, the ci / flake, ci / smoke and ci / audit gates,
+# conventional commits and the main ruleset.
+[tool.wordpress-nix]
+schema = 1
+profile = "deployment"
+
+# The site's facts (.github/wordpress-nix.json). woocommerce defaults to whether
+# composer.lock locks wp-plugin/woocommerce.
+[tool.wordpress-nix.site]
+home-url = "https://example.org"
