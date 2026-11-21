@@ -261,6 +261,18 @@
               wordpressModule = self.nixosModules.default;
               mkBedrockSite = self.lib.mkBedrockSite;
             };
+            # A site's `checks.smoke` (ci / smoke), over the template's site.
+            site-smoke = import ./lib/site-smoke.nix {
+              inherit pkgs;
+              wordpressModule = self.nixosModules.default;
+              package = self.lib.mkBedrockSite {
+                inherit pkgs;
+                name = "template-site";
+                src = ./templates/bedrock-site;
+                php = pkgs.php84;
+                activeTheme = "twentytwentyfive";
+              };
+            };
           };
       }
     );

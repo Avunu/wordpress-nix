@@ -12,12 +12,17 @@
 #   packages.vendor         its vendor FOD
 #   apps.relock             rewrite nix/vendor-hash (lib/relock.nix)
 #   apps.verify-wp-checksums  the package against wordpress.org (network)
+#   apps.wordpress-nix      the standards tools: managed files, CI steps, `audit`
+#   apps.composer           the site's PHP's Composer (`composer audit` in CI)
 #   checks.composer-validate  `composer validate` as nixpkgs runs it, plus --check-lock
 #   checks.vendor-hash      nix/vendor-hash is well-formed and not lib.fakeHash
 #   checks.build            the package, with mkBedrockSite's assertions
+#   checks.smoke            the package booted in a NixOS VM (needs KVM;
+#                           lib/site-smoke.nix)
 #
 # Every check is pure: nothing in them reaches the network. The audits that
-# must (composer audit, verify-wp-checksums) are CI job steps.
+# must (composer audit, verify-wp-checksums, `wordpress-nix audit`) are CI job
+# steps (site-ci.yml).
 localFlake:
 { lib, config, ... }:
 let
@@ -122,6 +127,7 @@ in
           text = ''exec ${lib.getExe verify} --root ${site} "$@"'';
         };
         vendorHash = lib.fileContents cfg.vendorHashFile;
+        composer = pkgs.${cfg.php}.packages.composer;
       in
       {
         _module.args.pkgs = lib.mkDefault nixpkgs.legacyPackages.${system};
@@ -142,6 +148,16 @@ in
             program = lib.getExe verifyPackage;
             meta.description = "Compare the built site with wordpress.org's published files (needs the network)";
           };
+          wordpress-nix = {
+            type = "app";
+            program = lib.getExe localFlake.packages.${system}.wordpress-nix;
+            meta.description = "wordpress-nix's standards tools: sync, ci steps, audit";
+          };
+          composer = {
+            type = "app";
+            program = lib.getExe composer;
+            meta.description = "Composer on the site's PHP";
+          };
         };
 
         checks = {
@@ -157,7 +173,7 @@ in
                     (cfg.src + "/composer.lock")
                   ];
                 };
-                tools = [ pkgs.${cfg.php}.packages.composer ];
+                tools = [ composer ];
               }
               ''
                 composer validate --strict --no-interaction --no-check-all --no-check-publish --check-lock
@@ -170,6 +186,14 @@ in
           };
 
           build = site;
+        }
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          # ci / smoke: the VM. `ci / flake` builds every other check.
+          smoke = import ../lib/site-smoke.nix {
+            inherit pkgs;
+            wordpressModule = localFlake.nixosModules.default;
+            package = site;
+          };
         };
       };
   };
