@@ -1,0 +1,343 @@
+name: rollout
+
+# The wordpress-nix mover (docs/production/releases.md; moonshot v3 §4.7, §6.5): once the
+# cluster runs a release, every site repository gets one pull request on
+# `standards/wordpress-nix-<tag>` that moves its flake.nix and flake.lock to that tag,
+# relocks (a nixpkgs move can change the vendor tree's hash through Composer's version)
+# and renders the managed files with the new wordpress-nix (`wordpress-nix sync`, which
+# pins the caller workflows to the tag's commit); it auto-merges once the site's
+# required checks pass.
+#
+#   resolve  the tag's commit; the guard of the release order: cluster-ovh-01's flake.lock
+#            must already build the cluster with this wordpress-nix (cluster →
+#            wordpress-nix), read with the rollout App's Contents read token for that
+#            repository alone; the targets (`repos`, else the WORDPRESS_NIX_ROLLOUT_REPOS
+#            variable), repositories of this repository's owner, by name.
+#   plan     per site, on a fresh hosted runner with no write token: clones the site's
+#            default branch with a Contents-read token for it alone, moves the input,
+#            relocks, syncs, and uploads the patch and the commit it was made on.
+#   publish  per site (environment wordpress-nix-rollout, the only holder of the App's
+#            key): checks the patch before any write token exists (only the files a
+#            rollout writes: flake.nix, flake.lock, nix/vendor-hash and the managed
+#            files; regular files; no rename or mode change), commits it on the base it
+#            was planned on, pushes the branch, opens or updates the PR and enables
+#            auto-merge for that commit (--match-head-commit).
+#
+# Run it by hand, after the cluster-ovh-01 PR that bumps the `cluster` revision merged:
+#   gh workflow run rollout.yml -f version=vX.Y.Z
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The release tag, vX.Y.Z"
+        type: string
+        required: true
+      repos:
+        description: "Comma-separated site repositories of this owner, by name (site-<slug>); empty uses the WORDPRESS_NIX_ROLLOUT_REPOS variable"
+        type: string
+        default: ""
+      cluster-repo:
+        description: The cluster instance (a repository of this owner, by name) whose flake.lock must already build with this release
+        type: string
+        default: cluster-ovh-01
+      skip-cluster-check:
+        description: "Roll out although the cluster does not run this release yet (a site-only fix)"
+        type: boolean
+        default: false
+      dry-run:
+        description: "Plan and check, but push nothing"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: rollout
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: wordpress-nix-rollout
+    permissions:
+      contents: read # the tag
+    outputs:
+      tag-sha: ${{ steps.tag.outputs.sha }}
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - id: tag
+        name: The release tag's commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be vX.Y.Z, not ${VERSION@Q}"
+            exit 1
+          fi
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$VERSION" --jq .sha)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "$VERSION is $sha"
+
+      # Read-only, for the cluster's lock alone.
+      - if: ${{ !inputs.skip-cluster-check }}
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.WORDPRESS_NIX_ROLLOUT_APP_ID }}
+          private-key: ${{ secrets.WORDPRESS_NIX_ROLLOUT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.cluster-repo }}
+          permission-contents: read
+
+      # Release order (docs/production/releases.md): library, then the cluster's `cluster`
+      # revision, then the sites. A site must never pin a wordpress-nix the cluster does not
+      # build it with: within a major its options only grow, so the cluster's may be newer,
+      # never older.
+      - if: ${{ !inputs.skip-cluster-check }}
+        name: The cluster already builds with this release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLUSTER: ${{ github.repository_owner }}/${{ inputs.cluster-repo }}
+          TAG_SHA: ${{ steps.tag.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw' "repos/$CLUSTER/contents/flake.lock" > lock.json
+          rev="$(jq -r '
+            . as $lock
+            | ($lock.root // "root") as $root
+            | def node($ref):
+                if ($ref | type) == "array"
+                then reduce $ref[] as $step ($root; $lock.nodes[.].inputs[$step] as $next
+                  | if ($next | type) == "array" then error("a follows path that leads to another") else $next end)
+                else $ref end;
+              node($lock.nodes[$root].inputs.cluster) as $cluster
+            | node($lock.nodes[$cluster].inputs["wordpress-nix"]) as $wp
+            | $lock.nodes[$wp].locked.rev' lock.json)"
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$TAG_SHA...$rev" --jq .status)"
+          case "$status" in
+            identical|ahead) echo "$CLUSTER builds with $rev, at or after $TAG_SHA" ;;
+            *)
+              echo "::error::$CLUSTER builds with wordpress-nix $rev, which does not contain $TAG_SHA ($status): merge the cluster bump first, or rerun with skip-cluster-check"
+              exit 1
+              ;;
+          esac
+
+      - id: targets
+        name: The site repositories
+        env:
+          REPOS: ${{ inputs.repos || vars.WORDPRESS_NIX_ROLLOUT_REPOS }}
+        run: |
+          set -euo pipefail
+          names=()
+          IFS=', ' read -ra repos <<< "$REPOS"
+          for repo in "${repos[@]}"; do
+            [ -n "$repo" ] || continue
+            if ! [[ "$repo" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+              echo "::error::not a repository name of this owner: ${repo@Q}"
+              exit 1
+            fi
+            names+=("$repo")
+          done
+          if [ "${#names[@]}" = 0 ]; then
+            echo "::error::no site repositories: pass repos, or set the WORDPRESS_NIX_ROLLOUT_REPOS variable"
+            exit 1
+          fi
+          matrix="$(printf '%s\n' "${names[@]}" | jq -cRs 'split("\n") | map(select(. != "")) | {repo: .}')"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          jq . <<<"$matrix"
+
+  plan:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: wordpress-nix-rollout
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      # Contents read on this one site, for the clone only: it is gone before the site's
+      # code runs.
+      - id: read-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.WORDPRESS_NIX_ROLLOUT_APP_ID }}
+          private-key: ${{ secrets.WORDPRESS_NIX_ROLLOUT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.repo }}
+          permission-contents: read
+
+      - name: Clone the site's default branch
+        env:
+          GH_TOKEN: ${{ steps.read-token.outputs.token }}
+          REPO: ${{ github.repository_owner }}/${{ matrix.repo }}
+        run: |
+          set -euo pipefail
+          branch="$(gh api "repos/$REPO" --jq .default_branch)"
+          git init -q site
+          git -C site fetch -q --no-tags "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "refs/heads/$branch"
+          git -C site -c advice.detachedHead=false checkout -q FETCH_HEAD
+          mkdir -p "$RUNNER_TEMP/out"
+          jq -n --arg branch "$branch" --arg base "$(git -C site rev-parse HEAD)" '{branch: $branch, base: $base}' \
+            > "$RUNNER_TEMP/out/meta.json"
+          cat "$RUNNER_TEMP/out/meta.json"
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          determinate: false
+
+      - name: Move wordpress-nix, relock, sync
+        working-directory: site
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG_SHA: ${{ needs.resolve.outputs.tag-sha }}
+          SOURCE: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The input's URL names the tag; anything else is the site's own and left alone.
+          if ! grep -qE "wordpress-nix\.url = \"github:${SOURCE}(/[^\"]*)?\";" flake.nix; then
+            echo "::error::flake.nix does not set inputs.wordpress-nix.url = \"github:${SOURCE}/<tag>\""
+            exit 1
+          fi
+          sed -E -i "s|(wordpress-nix\.url = \"github:${SOURCE})(/[^\"]*)?\";|\1/${VERSION}\";|" flake.nix
+          nix flake update wordpress-nix
+          locked="$(jq -r '.nodes[.nodes.root.inputs["wordpress-nix"]].locked.rev' flake.lock)"
+          if [ "$locked" != "$TAG_SHA" ]; then
+            echo "::error::flake.lock locks wordpress-nix at $locked, not $VERSION ($TAG_SHA)"
+            exit 1
+          fi
+          nix run .#relock
+          # Offline: the lock is moved above; sync renders against it.
+          nix run .#wordpress-nix -- sync --write --offline
+          git add -A
+          git diff --cached --binary > "$RUNNER_TEMP/out/rollout.patch"
+          git --no-pager diff --cached --stat
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rollout-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, plan]
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: wordpress-nix-rollout
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rollout-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/rollout
+
+      - id: read-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.WORDPRESS_NIX_ROLLOUT_APP_ID }}
+          private-key: ${{ secrets.WORDPRESS_NIX_ROLLOUT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.repo }}
+          permission-contents: read
+
+      # The commit the plan was made on, which must still be on the default branch.
+      - id: base
+        name: Clone the site at the planned base
+        env:
+          TOKEN: ${{ steps.read-token.outputs.token }}
+          REPO: ${{ github.repository_owner }}/${{ matrix.repo }}
+          META: ${{ runner.temp }}/rollout/meta.json
+        run: |
+          set -euo pipefail
+          branch="$(jq -r .branch "$META")"
+          base="$(jq -r .base "$META")"
+          if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]] || ! [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::the plan's meta.json is not a branch and a commit"
+            exit 1
+          fi
+          git init -q site
+          git -C site fetch -q --no-tags "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "refs/heads/$branch"
+          if ! git -C site merge-base --is-ancestor "$base" FETCH_HEAD 2> /dev/null; then
+            echo "::error::$base, which the plan was made on, is not on $branch any more"
+            exit 1
+          fi
+          git -C site -c advice.detachedHead=false checkout -q "$base"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      # The plan ran the site's flake: its patch is data. Only what a rollout writes, each an
+      # added or modified regular file; nothing else is pushed.
+      - id: check
+        name: Check and apply the patch (nothing of it runs)
+        working-directory: site
+        env:
+          PATCH: ${{ runner.temp }}/rollout/rollout.patch
+          ALLOW: '^(flake\.nix|flake\.lock|nix/vendor-hash|wordpress-nix\.toml|committed\.toml|\.editorconfig|\.pre-commit-config\.yaml|\.github/dependabot\.yml|\.github/wordpress-nix\.json|\.github/workflows/(ci|deps|audit)\.yml)$'
+        run: |
+          set -euo pipefail
+          if [ ! -s "$PATCH" ]; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            echo "nothing to roll out"
+            exit 0
+          fi
+          if grep -qE '^((rename|copy) (from|to)|(dis)?similarity index|(old|new) mode|deleted file mode) ' "$PATCH" \
+            || grep -E '^new file mode ' "$PATCH" | grep -vE ' mode 100644$' > /dev/null \
+            || grep -E '^index [0-9a-f]+\.\.[0-9a-f]+ ' "$PATCH" | grep -vE ' 100644$' > /dev/null; then
+            echo "::error::the patch renames, copies, deletes or changes the mode of a file"
+            exit 1
+          fi
+          git apply --index "$PATCH"
+          bad=0
+          while IFS= read -r path; do
+            if ! [[ "$path" =~ $ALLOW ]] || [ -L "$path" ]; then
+              echo "::error::refusing ${path@Q}: not a file a rollout writes"
+              bad=1
+            fi
+          done < <(git diff --cached --name-only HEAD)
+          [ "$bad" = 0 ]
+          echo "empty=false" >> "$GITHUB_OUTPUT"
+          git --no-pager diff --cached --stat HEAD
+
+      - if: steps.check.outputs.empty == 'false'
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.WORDPRESS_NIX_ROLLOUT_APP_ID }}
+          private-key: ${{ secrets.WORDPRESS_NIX_ROLLOUT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - if: steps.check.outputs.empty == 'false'
+        name: Commit, push, open the PR and enable auto-merge
+        working-directory: site
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository_owner }}/${{ matrix.repo }}
+          BRANCH: ${{ steps.base.outputs.branch }}
+          VERSION: ${{ inputs.version }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          user_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git -c user.name="${APP_SLUG}[bot]" -c user.email="${user_id}+${APP_SLUG}[bot]@users.noreply.github.com" \
+            commit -q -m "chore(deps): wordpress-nix ${VERSION}"
+          head="standards/wordpress-nix-${VERSION}"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${head}"
+          sha="$(git rev-parse HEAD)"
+          body="Moves wordpress-nix to ${VERSION}: flake.nix and flake.lock, the relock, and the managed files \`wordpress-nix sync\` renders. Opened by wordpress-nix's rollout.yml (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+          url="$(gh pr list --repo "$REPO" --head "$head" --state open --json url --jq '.[0].url // ""')"
+          if [ -z "$url" ]; then
+            url="$(gh pr create --repo "$REPO" --base "$BRANCH" --head "$head" --title "chore(deps): wordpress-nix ${VERSION}" --body "$body")"
+          fi
+          gh pr merge --auto --squash --match-head-commit "$sha" "$url"
+          echo "$url: auto-merge on for $sha" | tee -a "$GITHUB_STEP_SUMMARY"
