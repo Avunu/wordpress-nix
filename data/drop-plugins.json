@@ -1,0 +1,58 @@
+{
+  "plugins": {
+    "mainwp-child": "remote management: a MainWP dashboard can install and run code; disconnect the site from the dashboard",
+    "mainwp": "remote management dashboard",
+    "mainwp-child-reports": "remote management reporting",
+    "core-rollback": "rewrites core on disk, which production cannot (DISALLOW_FILE_MODS)",
+    "wp-rollback": "rewrites plugins on disk, which production cannot (DISALLOW_FILE_MODS)",
+    "wp-console": "runs arbitrary PHP from wp-admin",
+    "download-plugin": "packages installed code for download; plugins come from Composer",
+    "sql-buddy": "runs arbitrary SQL from wp-admin",
+    "wpvivid-backuprestore": "backups are the cluster's (backup-core and the R2 mirror)",
+    "wpvivid-backup-pro": "backups are the cluster's (backup-core and the R2 mirror)",
+    "wp-xcloud-migration": "legacy host tooling",
+    "index-wp-mysql-for-speed": "rewrites table keys; the platform owns the schema",
+    "index-wp-users-for-speed": "legacy host performance tooling",
+    "wordfence": "writes firewall files to wp-content; the edge (Cloudflare WAF) and the read-only tree replace it",
+    "sucuri-scanner": "writes to wp-content; the edge and the read-only tree replace it",
+    "patchstack": "the vulnerability feed is wordpress-nix audit (Wordfence Intelligence)",
+    "stop-user-enumeration": "platform-user-enumeration.php does this",
+    "litespeed-cache": "no LiteSpeed under FrankenPHP; HTML caching is a Cloudflare Cache Rule",
+    "wp-super-cache": "page cache; HTML caching is a Cloudflare Cache Rule",
+    "w3-total-cache": "page cache; HTML caching is a Cloudflare Cache Rule",
+    "wp-fastest-cache": "page cache; HTML caching is a Cloudflare Cache Rule",
+    "flying-press": "page cache writing to wp-content; HTML caching is a Cloudflare Cache Rule",
+    "wp-cloudflare-page-cache": "page cache writing to wp-content; HTML caching is a Cloudflare Cache Rule",
+    "redis-cache": "object-cache drop-in; the platform runs no Redis",
+    "health-check": "troubleshooting mode installs a mu-plugin at run time",
+    "jwt-auth": {
+      "reason": "Avunu's jwt-auth fork collides with the wordpress.org slug; Access and two-factor replace it",
+      "onlyCollision": true
+    },
+    "woo-update-manager": "WooCommerce.com updater; extensions are committed code",
+    "gitium": "v2: wp-admin no longer commits code",
+    "webp-express": "writes converted images and .htaccess into wp-content",
+    "xcloud-auto-login": "legacy host tooling",
+    "xcloud-cloudflare-edge-cache": "legacy host cache integration; cutover snapshots and disables the zone's cache rules"
+  },
+  "patterns": {
+    "mainwp*": "remote management",
+    "xcloud-*": "legacy host tooling",
+    "wpvivid*": "backups are the cluster's",
+    "index-wp-*": "legacy host performance tooling"
+  },
+  "dropins": [
+    "advanced-cache.php",
+    "object-cache.php",
+    "db.php",
+    "db-error.php",
+    "install.php",
+    "maintenance.php",
+    "php-error.php",
+    "fatal-error-handler.php",
+    "sunrise.php",
+    "blog-deleted.php",
+    "blog-inactive.php",
+    "blog-suspended.php"
+  ]
+}

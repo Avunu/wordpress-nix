@@ -1,0 +1,21 @@
+{
+  "minimumWordPress": "6.6",
+  "defaultPhp": "php84",
+  "php": {
+    "php83": {
+      "label": "PHP 8.3",
+      "platform": "8.3",
+      "requires": ">=8.3"
+    },
+    "php84": {
+      "label": "PHP 8.4",
+      "platform": "8.4",
+      "requires": ">=8.3"
+    },
+    "php85": {
+      "label": "PHP 8.5",
+      "platform": "8.5",
+      "requires": ">=8.3"
+    }
+  }
+}

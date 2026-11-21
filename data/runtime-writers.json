@@ -1,0 +1,23 @@
+{
+  "plugins": {
+    "cwicly": {"writes": ["uploads/cwicly"], "note": "regenerated CSS and local fonts live on the JuiceFS uploads volume; regenerate after import"},
+    "fluentform": {"writes": ["uploads/fluentform"], "note": "entry files on JuiceFS, served; fluentform/temp denied"},
+    "fluentformpro": {"writes": ["uploads/fluentform"], "note": "entry files on JuiceFS, served; fluentform/temp denied"},
+    "woocommerce": {"writes": ["uploads/woocommerce_uploads", "uploads/wc-logs"], "note": "private downloads on JuiceFS (403 over HTTP, download method force); logs go to the database handler"},
+    "gravityforms": {"writes": ["uploads/gravity_forms"], "note": "JuiceFS, excluded from offload, 403 over HTTP"},
+    "woocommerce-pdf-invoices-packing-slips": {"writes": ["uploads/wpo_wcpdf"], "note": "JuiceFS, excluded from offload, 403 over HTTP"},
+    "woo-product-feed-pro": {"writes": ["uploads/woo-product-feed-pro"], "note": "generated feeds on JuiceFS"},
+    "seo-by-rank-math": {"writes": ["uploads/rank-math"], "note": "JuiceFS"},
+    "cleantalk-spam-protect": {"writes": ["uploads/cleantalk_fw_files"], "note": "firewall files on JuiceFS; verify in staging"},
+    "wp-sheet-editor-premium": {"writes": ["uploads/wp-sheet-editor"], "note": "exports on JuiceFS"},
+    "wpcodebox2": {"writes": ["uploads/wpcodebox"], "note": "the generated functionality plugin is committed code; uploads/wpcodebox on JuiceFS"},
+    "nextend-facebook-connect": {"writes": ["uploads/nsl_avatars"], "note": "avatars on JuiceFS"},
+    "wp-webhooks-pro": {"writes": ["uploads/wp-webhooks-pro"], "note": "JuiceFS"},
+    "dk-pdf": {"writes": [], "mpdf": true, "note": "mPDF temp directory: platform-environment.php sends it to /tmp"},
+    "give-pdf-receipts": {"writes": [], "mpdf": true, "note": "mPDF temp directory inside the plugin: needs a temp-dir filter or the plugin is dropped"}
+  },
+  "localPrefixes": ["cwicly", "fonts", "wpcodebox", "fluentform"],
+  "privatePrefixes": ["woocommerce_uploads", "gravity_forms", "wpo_wcpdf*", "wc-logs", "fluentform/temp"],
+  "excludePrefixes": ["cwicly", "fonts", "wpcodebox", "woocommerce_uploads", "fluentform", "gravity_forms", "wpo_wcpdf*", "wc-logs", "woo-product-feed-pro", "rank-math", "cleantalk_fw_files", "wp-sheet-editor", "nsl_avatars", "wp-webhooks-pro", "dpwap_logs"],
+  "wpcodeboxStub": "<?php die();"
+}

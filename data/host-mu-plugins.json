@@ -1,0 +1,17 @@
+{
+  "files": {
+    "xcloud-auto-login.php": "xCloud panel login",
+    "xcloud-cloudflare-edge-cache.php": "xCloud edge cache purge",
+    "health-check-troubleshooting-mode.php": "Health Check's troubleshooting mode",
+    "wpvivid_restore_check.php": "WPvivid restore check",
+    "index-wp-mysql-for-speed-update-filter.php": "Index WP MySQL For Speed",
+    "SupportCenterMUAutoloader.php": "host support tooling",
+    "endurance-page-cache.php": "host page cache",
+    "sso.php": "host single sign-on"
+  },
+  "patterns": {
+    "xcloud-*": "xCloud host tooling",
+    "platform-*.php": "v2 wordpress-nix platform file: the build injects its own",
+    "wp-cloudflare-*": "host Cloudflare integration"
+  }
+}
