@@ -14,8 +14,8 @@ name: site-deps
 #                   verify-relock`: the URL names the same package and version, against
 #                   the PR's merge-base), mints the App's token, pushes `chore(deps):
 #                   relock vendor hash [dependabot skip]`, and enables auto-merge when the
-#                   lock is ok and the decision table says relock; else labels the PR
-#                   needs-review with auto-merge off
+#                   lock is ok and the decision table says relock (or auto, policy `all`);
+#                   else labels the PR needs-review with auto-merge off
 #   auto-merge      every Dependabot PR's verdict (`wordpress-nix site-verdict`, the §6.4
 #                   table): github-actions bumps auto-merge or close; a Composer PR waits
 #                   for relock-push, or, when there was nothing to relock, auto-merges once
@@ -339,7 +339,8 @@ jobs:
         run: wordpress-nix ci verify-relock --base "$MERGE_BASE" --head "$(git write-tree)"
 
       # The decision table, from the PR's metadata (the job's own token) and the
-      # integration branch's site facts: only `relock` auto-merges after this push.
+      # integration branch's site facts: `relock`, or `auto` (policy `all` lifting a
+      # review), auto-merges after this push, and only when verify-relock said ok.
       - id: meta
         if: github.event.pull_request.user.login == 'dependabot[bot]'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
@@ -380,7 +381,7 @@ jobs:
 
       # Before the push: an auto-merge an earlier run enabled survives it, and must not
       # merge this head.
-      - if: steps.locks.outputs.decision != 'ok' || steps.verdict.outputs.verdict != 'relock'
+      - if: steps.locks.outputs.decision != 'ok' || (steps.verdict.outputs.verdict != 'relock' && steps.verdict.outputs.verdict != 'auto')
         name: Hold the PR for review (auto-merge off, labelled needs-review)
         working-directory: .base
         env:
@@ -410,7 +411,7 @@ jobs:
 
       # Only the commit this job pushed (--head-sha), and only where the gates protect the
       # integration branch: else the PR is labelled needs-review.
-      - if: inputs.auto-merge && steps.locks.outputs.decision == 'ok' && steps.verdict.outputs.verdict == 'relock'
+      - if: inputs.auto-merge && steps.locks.outputs.decision == 'ok' && (steps.verdict.outputs.verdict == 'relock' || steps.verdict.outputs.verdict == 'auto')
         name: Auto-merge, where required checks protect the integration branch
         working-directory: .base
         env:
@@ -511,8 +512,11 @@ jobs:
 
       # The verdict is made on the event's head, and GitHub arms auto-merge only while the
       # PR's head is still that commit (--head-sha, gh pr merge --match-head-commit).
-      #   relock (Composer)  relock-push pushed a patch: it decides (`wait`); nothing to
-      #                      relock: auto only when the PR's own lock passed verify-relock
+      #   relock or auto     relock-push pushed a patch: it decides (`wait`); nothing to
+      #   (Composer)         relock: auto only when the PR's own lock passed verify-relock.
+      #                      A Composer `auto` is policy `all` lifting a review: it is armed
+      #                      only where verify-relock passed, never on Dependabot's head
+      #                      before relock-push (whose hold may already have run)
       #   relock elsewhere   (none in the table) a person's
       #   auto / close / review as the table says
       - id: decide
@@ -531,6 +535,11 @@ jobs:
           set -euo pipefail
           args=(--pr-url "$PR_URL" --integration "$INTEGRATION" --merge-method "$METHOD" --head-sha "$HEAD_SHA")
           verdict="$VERDICT"
+          if [ "$ECOSYSTEM" = composer ] && [ "$verdict" = auto ]; then
+            # Policy `all` lifts a Composer review to auto: it still goes through the relock
+            # and verify-relock, never straight onto Dependabot's head.
+            verdict=relock
+          fi
           if [ "$verdict" = relock ]; then
             if [ "$ECOSYSTEM" != composer ]; then
               verdict=review
