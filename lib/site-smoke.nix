@@ -7,7 +7,8 @@
 #     the site's activeTheme;
 #   - `/`, `/wp/wp-login.php` and `/wp-json/` answer 200;
 #   - the code tree cannot be written; `/app/uploads/2024/01/x.php` is 403;
-#   - no PHP fatal or warning, and no permission error, in the journal.
+#   - no PHP fatal or warning in wp-cli's output (stdout and stderr) or the
+#     journal, and no permission error in the journal.
 #
 # Needs KVM (the `kvm` system feature): CI runs it on the kvm runners.
 {
@@ -63,12 +64,25 @@ pkgs.testers.runNixOSTest {
     };
 
   testScript = ''
+    import re
     import shlex
 
     PKG = "${package}"
 
+    # PHP's own reports, logged ("PHP Warning:  …", stderr) or displayed ("Warning: … on
+    # line N", stdout); wp-cli's own "Warning: …" lines carry no "on line".
+    PHP_PROBLEM = re.compile(
+        r"PHP (?:Fatal error|Warning|Parse error)"
+        r"|^(?:Fatal error|Warning|Parse error): .* on line [0-9]+",
+        re.MULTILINE,
+    )
+
     def wp(args):
-        return site.succeed(f"runuser -u wordpress -- wp {args}").strip()
+        out = site.succeed(f"runuser -u wordpress -- wp {args} 2>&1")
+        found = PHP_PROBLEM.search(out)
+        if found:
+            raise AssertionError(f"wp {args}: {found.group(0)}\n{out}")
+        return out.strip()
 
     def request(path):
         return site.succeed(
