@@ -2,7 +2,7 @@
 /*
 Plugin Name: Environment
 Plugin URI: https://avu.nu/
-Description: wordpress-nix's runtime posture for a read-only Bedrock site: environment-only configuration, plugins kept to their environments, no update checks, two-factor for administrators, no application passwords, no executable uploads, and no mail outside production.
+Description: wordpress-nix's runtime posture for a read-only Bedrock site: environment-only configuration, plugins kept to their environments, no update checks, PDF temp files in /tmp, two-factor for administrators, no application passwords, no executable uploads, and no mail outside production.
 Version: 3.0
 Author: Avunu LLC
 Author URI: https://avu.nu/
@@ -99,11 +99,14 @@ if ( null !== wp_platform_env( 'WP_MAX_MEMORY_LIMIT' ) ) {
 /*
  * ---- plugins kept to their environment -----------------------------------------
  *
- * Filtered out of active_plugins at load time, so the option in the database is
- * untouched and carries the production state wherever it goes. Production-only:
- * security, anti-spam, remote-management and CAPTCHA plugins with no environment
- * switch of their own. Development-only: WPCodeBox, whose generated plugin
- * production cannot write.
+ * Filtered out of active_plugins when it is read, and put back when it is
+ * written: activate_plugin() and deactivate_plugins() read the filtered list,
+ * change one entry and save it, which would otherwise drop every plugin kept out
+ * of this environment from the stored option. So the option in the database
+ * keeps each plugin's own state wherever it goes. Production-only: security,
+ * anti-spam, remote-management and CAPTCHA plugins with no environment switch of
+ * their own. Development-only: WPCodeBox, whose generated plugin production
+ * cannot write.
  */
 
 /**
@@ -155,6 +158,36 @@ function wp_platform_filter_active_plugins( $plugins ) {
 }
 add_filter( 'option_active_plugins', 'wp_platform_filter_active_plugins' );
 
+/**
+ * Keep the stored entries of the plugins kept out of this environment when the
+ * active plugin list is saved.
+ *
+ * @param mixed $plugins The list being saved.
+ * @return mixed
+ */
+function wp_platform_keep_disabled_plugins( $plugins ) {
+	$disabled = wp_platform_disabled_plugins();
+	if ( array() === $disabled || ! is_array( $plugins ) ) {
+		return $plugins;
+	}
+	remove_filter( 'option_active_plugins', 'wp_platform_filter_active_plugins' );
+	$stored = get_option( 'active_plugins', array() );
+	add_filter( 'option_active_plugins', 'wp_platform_filter_active_plugins' );
+
+	$kept = false;
+	foreach ( is_array( $stored ) ? $stored : array() as $plugin ) {
+		if ( in_array( dirname( (string) $plugin ), $disabled, true ) && ! in_array( $plugin, $plugins, true ) ) {
+			$plugins[] = $plugin;
+			$kept      = true;
+		}
+	}
+	if ( $kept ) {
+		sort( $plugins ); // As activate_plugin() leaves it.
+	}
+	return $plugins;
+}
+add_filter( 'pre_update_option_active_plugins', 'wp_platform_keep_disabled_plugins' );
+
 add_action(
 	'admin_notices',
 	static function (): void {
@@ -176,8 +209,44 @@ add_action(
  * Nothing can be updated in place: code moves through composer.lock. So no
  * outbound calls to wordpress.org for it, no nag, and no Site Health findings about
  * auto-updates or a writable upgrade directory that cannot apply here.
+ *
+ * The transients alone do not stop the calls: wp_update_plugins() and
+ * wp_update_themes() ask wordpress.org whenever an installed item is missing
+ * from ->checked, which an empty answer always is. So core's checks are
+ * unhooked (the cron events, the load-* screens, their scheduling), and a check
+ * something else starts (`wp plugin list` calls wp_update_plugins() itself) is
+ * refused before it leaves.
  */
 if ( wp_platform_is_read_only() ) {
+	foreach (
+		array(
+			'wp_version_check'          => array( 'wp_version_check' ),
+			'wp_update_plugins'         => array( 'wp_update_plugins', 'load-plugins.php', 'load-update.php', 'load-update-core.php' ),
+			'wp_update_themes'          => array( 'wp_update_themes', 'load-themes.php', 'load-update.php', 'load-update-core.php' ),
+			'_maybe_update_core'        => array( 'admin_init' ),
+			'_maybe_update_plugins'     => array( 'admin_init' ),
+			'_maybe_update_themes'      => array( 'admin_init' ),
+			'wp_schedule_update_checks' => array( 'init' ),
+		) as $wp_platform_callback => $wp_platform_hooks
+	) {
+		foreach ( $wp_platform_hooks as $wp_platform_hook ) {
+			remove_action( $wp_platform_hook, $wp_platform_callback );
+		}
+	}
+	unset( $wp_platform_callback, $wp_platform_hooks, $wp_platform_hook );
+
+	add_filter(
+		'pre_http_request',
+		static function ( $preempt, $args, $url ) {
+			if ( false === $preempt && 1 === preg_match( '#^https?://api\.wordpress\.org/(core/version-check|plugins/update-check|themes/update-check)/#', (string) $url ) ) {
+				return new WP_Error( 'wordpress_nix_read_only', 'Update checks are off: this site is updated through composer.lock.' );
+			}
+			return $preempt;
+		},
+		10,
+		3
+	);
+
 	$wp_platform_no_updates = static function () {
 		return (object) array(
 			'last_checked'    => time(),
@@ -207,6 +276,19 @@ if ( wp_platform_is_read_only() ) {
 		}
 	);
 }
+
+/*
+ * ---- PDF libraries write to /tmp ---------------------------------------------------
+ *
+ * mPDF's tempDir defaults to a directory inside the plugin, a read-only store path
+ * here; where the plugin has a filter for it, it goes to get_temp_dir() (TMPDIR,
+ * the unit's own /tmp). Checked against the plugins' sources:
+ *   dk-pdf 2.3.1               dkpdf_mpdf_temp_dir (modules/PDF/DocumentBuilder.php)
+ *   give-pdf-receipts 3.3.0    nothing to filter: TCPDF (from Give's vendor) caches
+ *                              in K_PATH_CACHE, sys_get_temp_dir() unless defined,
+ *                              and its bulk-export temp directory is under uploads
+ */
+add_filter( 'dkpdf_mpdf_temp_dir', static fn(): string => untrailingslashit( get_temp_dir() ) );
 
 /*
  * ---- two-factor for administrators (production) --------------------------------
