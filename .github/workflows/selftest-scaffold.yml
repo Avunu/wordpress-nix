@@ -5,7 +5,8 @@ name: selftest-scaffold
 # Composer change resolved against WP Packages, `nix run .#relock` (the vendor FOD fetched
 # from the registries), the build and the pure checks, then the relock pipeline's own
 # steps on the result: `ci verify-relock` (a new package is reviewed, a tampered host is
-# refused) and `wordpress-nix audit` against a feed that names the new plugin.
+# refused) and `wordpress-nix audit` against a feed that names the new plugin, from the
+# bump and from a commit stacked on it (site-ci's merge-base).
 #
 # Self-hosted (the nixos runners), no secret; a pull request from a fork runs on
 # ubuntu-latest.
@@ -130,3 +131,24 @@ jobs:
             exit 1
           fi
           nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base HEAD
+
+      # site-ci's `base` step on a head stacked on the bump: relock-push's vendor-hash commit,
+      # or update-branches' merge, which CI is dispatched on when there is no App. The base is
+      # the merge-base with the integration branch, not the head's parent (which already
+      # carries the bumped lock).
+      - name: wordpress-nix audit, from a commit stacked on the bump, against the merge-base
+        working-directory: ${{ runner.temp }}/site-selftest
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+        run: |
+          set -euo pipefail
+          git update-ref refs/remotes/origin/main "$before"
+          git -c user.name=selftest -c user.email=selftest@example.org commit -q --allow-empty \
+            -m "chore(deps): relock vendor hash [dependabot skip]"
+          nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base HEAD^
+          base="$(git merge-base refs/remotes/origin/main HEAD)"
+          [ "$base" = "$before" ]
+          if nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base "$base"; then
+            echo "::error::audit passed, from a commit stacked on the bump, a vulnerable plugin the bump added"
+            exit 1
+          fi

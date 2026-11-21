@@ -348,24 +348,36 @@ jobs:
           attic login ci "$ENDPOINT" ${TOKEN:+"$TOKEN"}
           attic use "ci:$NAME"
 
-      # What the change is compared with: a pull request's merge-base, a push's previous
-      # head (its parent when the branch is new).
+      # What the change is compared with. A push to the integration branch: its previous head
+      # (the parent when that is unknown). Every other run, a pull request, a push to a
+      # pull request's branch, or a dispatch on one (relock-push, sweep and update-branches
+      # dispatch CI on a head they pushed when there is no App): the merge-base with the
+      # integration branch. Never the head's parent: on a relocked Dependabot branch that is
+      # Dependabot's own commit, which already carries the bumped composer.lock, so a
+      # vulnerable version the bump brings would count as already there.
       - id: base
         name: The commit this change is audited against
         env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          INTEGRATION: ${{ inputs.integration-branch }}
+          INTEGRATION_PUSH: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', inputs.integration-branch) }}
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           base=""
-          if [ "$EVENT" = pull_request ]; then
-            base="$(git merge-base "$PR_BASE" HEAD)"
-          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
-            && git cat-file -e "$BEFORE^{commit}" 2> /dev/null; then
-            base="$BEFORE"
-          elif git rev-parse -q --verify HEAD^ > /dev/null; then
-            base="$(git rev-parse HEAD^)"
+          if [ "$INTEGRATION_PUSH" = true ]; then
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+              && git cat-file -e "$BEFORE^{commit}" 2> /dev/null; then
+              base="$BEFORE"
+            elif git rev-parse -q --verify HEAD^ > /dev/null; then
+              base="$(git rev-parse HEAD^)"
+            fi
+          else
+            # fetch-depth: 0 fetched every branch as origin/*.
+            if ! git rev-parse -q --verify "refs/remotes/origin/$INTEGRATION" > /dev/null; then
+              echo "::error::origin/$INTEGRATION is not in the checkout: the audit has no base to compare with"
+              exit 1
+            fi
+            base="$(git merge-base "refs/remotes/origin/$INTEGRATION" HEAD)"
           fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "audited against ${base:-nothing (every finding fails)}"
