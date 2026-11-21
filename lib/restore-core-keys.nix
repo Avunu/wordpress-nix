@@ -3,7 +3,7 @@
 #
 # The schema comes from the core the site will run: `--core DIR`, or a Bedrock
 # site's web/wp when run from its root. Without either, it falls back to the
-# platform's pinned core (lib/wordpress-core.nix), baked in at build time.
+# schema of nixpkgs' WordPress, baked in at build time.
 #
 #   nix run github:Avunu/wordpress#restore-core-keys -- dump.sql fixed.sql
 #   restore-core-keys --core result/web/wp dump.sql fixed.sql
@@ -13,7 +13,7 @@
   php,
 }:
 let
-  wordpressCore = import ./wordpress-core.nix { inherit pkgs; };
+  wordpressCore = "${pkgs.wordpress}/share/wordpress";
   standardSchema =
     pkgs.runCommandLocal "wordpress-standard-schema.sql" { nativeBuildInputs = [ php ]; }
       ''

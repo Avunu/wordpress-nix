@@ -17,21 +17,6 @@
         "type": "github"
       }
     },
-    "composition-c4": {
-      "locked": {
-        "lastModified": 1684533115,
-        "narHash": "sha256-a+qumQAxgUkeH5U/9b9X7JGeYn+61nV0Y/bCGU1FO/M=",
-        "owner": "fossar",
-        "repo": "composition-c4",
-        "rev": "0d3f787d71ab954235491352887b69bf52c5e865",
-        "type": "github"
-      },
-      "original": {
-        "owner": "fossar",
-        "repo": "composition-c4",
-        "type": "github"
-      }
-    },
     "crate2nix": {
       "flake": false,
       "locked": {
@@ -87,22 +72,6 @@
       },
       "original": {
         "owner": "edolstra",
-        "repo": "flake-compat",
-        "type": "github"
-      }
-    },
-    "flake-compat_2": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1767039857,
-        "narHash": "sha256-vNpUSpF5Nuw8xvDLj2KCwwksIbjua2LZCqhV1LNRDns=",
-        "owner": "NixOS",
-        "repo": "flake-compat",
-        "rev": "5edf11c44bc78a0d334f6334cdaf7d60d732daab",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
         "repo": "flake-compat",
         "type": "github"
       }
@@ -164,24 +133,6 @@
         "type": "github"
       }
     },
-    "flake-utils_2": {
-      "inputs": {
-        "systems": "systems_2"
-      },
-      "locked": {
-        "lastModified": 1791914995,
-        "narHash": "sha256-Zf/xfQEAasnwnmEfHqW/4hjDE/s44yn2hD4RuVIZRjA=",
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "rev": "b7a79d3fea1e214f6d668d521cecec0c01e26544",
-        "type": "github"
-      },
-      "original": {
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "type": "github"
-      }
-    },
     "ghostty": {
       "flake": false,
       "locked": {
@@ -221,45 +172,6 @@
       "original": {
         "owner": "cachix",
         "repo": "git-hooks.nix",
-        "type": "github"
-      }
-    },
-    "git-hooks_2": {
-      "inputs": {
-        "flake-compat": "flake-compat_2",
-        "nixpkgs": [
-          "wordpress-sqlite-anywhere",
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1793686154,
-        "narHash": "sha256-Zb/0L3soxrkfcrywpfp0J++0WFLB3tzh0Xtx9up+VNc=",
-        "owner": "cachix",
-        "repo": "git-hooks.nix",
-        "rev": "204b6977e00caac19e2313015a598543ca7be150",
-        "type": "github"
-      },
-      "original": {
-        "owner": "cachix",
-        "repo": "git-hooks.nix",
-        "type": "github"
-      }
-    },
-    "gitium": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1791973535,
-        "narHash": "sha256-S2UJJ56eCunr0W3Jc93Hi/3mdwxJ4cD6jQ+w+Ri3dos=",
-        "owner": "presslabs",
-        "repo": "gitium",
-        "rev": "833ac8da3c7fa59b4b104a5fc81adce80c943ff9",
-        "type": "github"
-      },
-      "original": {
-        "owner": "presslabs",
-        "ref": "1.2.6",
-        "repo": "gitium",
         "type": "github"
       }
     },
@@ -425,10 +337,8 @@
         "devenv": "devenv",
         "flake-parts": "flake-parts_2",
         "flake-utils": "flake-utils",
-        "gitium": "gitium",
         "nixpkgs": "nixpkgs_2",
-        "python-devops-nix": "python-devops-nix",
-        "wordpress-sqlite-anywhere": "wordpress-sqlite-anywhere"
+        "python-devops-nix": "python-devops-nix"
       }
     },
     "rust-overlay": {
@@ -467,21 +377,6 @@
         "type": "github"
       }
     },
-    "systems_2": {
-      "locked": {
-        "lastModified": 1681028828,
-        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
-        "owner": "nix-systems",
-        "repo": "default",
-        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-systems",
-        "repo": "default",
-        "type": "github"
-      }
-    },
     "treefmt-nix": {
       "inputs": {
         "nixpkgs": [
@@ -502,32 +397,6 @@
         "owner": "numtide",
         "repo": "treefmt-nix",
         "type": "github"
-      }
-    },
-    "wordpress-sqlite-anywhere": {
-      "inputs": {
-        "composition-c4": "composition-c4",
-        "flake-utils": "flake-utils_2",
-        "git-hooks": "git-hooks_2",
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1794245049,
-        "narHash": "sha256-KyljJdsj0PQq1b1PXPSo4TgftV/4aJciAtSvPd+/UfI=",
-        "ref": "main",
-        "rev": "53a15146a2d11e0d5481ea1d73f9ed01f1d2f2e2",
-        "revCount": 97,
-        "submodules": true,
-        "type": "git",
-        "url": "https://github.com/Avunu/wordpress-sqlite-anywhere"
-      },
-      "original": {
-        "ref": "main",
-        "submodules": true,
-        "type": "git",
-        "url": "https://github.com/Avunu/wordpress-sqlite-anywhere"
       }
     }
   },

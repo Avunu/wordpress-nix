@@ -1,18 +1,14 @@
 # restore-core-keys: a dump whose wp_options carries index-wp-mysql-for-speed's
 # keys (PRIMARY KEY (option_name), UNIQUE KEY option_id) must come out with the
-# standard ones, columns untouched, other tables untouched -- and then convert
-# to a SQLite database where option_name is UNIQUE.
+# standard ones, columns untouched, other tables untouched.
 {
   pkgs,
   restoreCoreKeys,
-  converter,
 }:
 pkgs.runCommand "restore-core-keys-test"
   {
     nativeBuildInputs = [
       restoreCoreKeys
-      converter
-      pkgs.sqlite
       pkgs.python3
     ];
   }
@@ -42,9 +38,5 @@ pkgs.runCommand "restore-core-keys-test"
     # Everything but that table's key lines is byte-identical.
     diff <(grep -v 'KEY' dump.sql) <(grep -v 'KEY' fixed.sql) || fail "something other than key lines changed"
 
-    mysql-to-sqlite fixed.sql out.sqlite --quiet --continue-on-error 2>/dev/null || true
-    sqlite3 out.sqlite "SELECT sql FROM sqlite_master WHERE name='wp_options__option_name'" | grep -q 'CREATE UNIQUE INDEX' \
-      || fail "option_name is not UNIQUE after conversion"
-    [ "$(sqlite3 out.sqlite "SELECT COUNT(*) FROM wp_options")" = "4" ] || fail "rows lost"
     echo ok > $out
   ''

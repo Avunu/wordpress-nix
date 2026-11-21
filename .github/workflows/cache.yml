@@ -1,10 +1,10 @@
 name: Binary cache
 
 # Fills the project's binary cache (wordpress-nix.cachix.org) with what cache.nixos.org cannot serve:
-# the optimized PHP builds (lib/php.nix), the native wp_turso and wp_mysql_parser extensions (Rust,
-# built from source by the plugin flake) and the tools this repository builds. Flakes and NixOS hosts
-# that depend on wordpress-nix substitute from the cache instead of compiling them (flake.nix nixConfig,
-# modules/nixos.nix, templates/site/flake.nix).
+# the optimized PHP builds (lib/php.nix) with FrankenPHP on them, and the tools this repository builds.
+# Flakes and NixOS hosts that depend on wordpress-nix substitute from the cache instead of compiling
+# them (flake.nix nixConfig, modules/nixos.nix, templates/bedrock-site/flake.nix). Sites' own builds
+# are not here: their vendor trees belong to the cluster's cache.
 #
 # It publishes only from `main` (push, the nightly schedule, a manual run) and never from a pull request.
 # Whoever holds CACHIX_AUTH_TOKEN can upload a signed NAR under ANY store path, and input-addressed paths
@@ -71,9 +71,8 @@ jobs:
         run: |
           set -euo pipefail
           nix build -L --no-link --print-out-paths \
-            .#wordpress-php83 .#wordpress-php84 .#wordpress-php85 \
-            .#wordpress-init .#turso-snapshot-publisher .#mysql-to-sqlite \
-            .#sqlite-to-turso .#restore-core-keys .#audit-mysql-dump > outputs.txt
+            .#frankenphp-php83 .#frankenphp-php84 .#frankenphp-php85 \
+            .#restore-core-keys .#audit-mysql-dump .#verify-wp-checksums > outputs.txt
           cat outputs.txt
 
       # What only we can serve. A path that arrived from any cache carries that cache's signature, so an
