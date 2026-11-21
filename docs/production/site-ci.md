@@ -39,6 +39,7 @@ release flow. Its files:
 | `.editorconfig` | editorconfig | 4 spaces for PHP, 2 for the rest |
 | `.pre-commit-config.yaml` | lint | no dumps, `auth.json` or `.env` in git; `php -l`; committed's message check |
 | `committed.toml` | commits | conventional commits |
+| `.gitignore`, the `site` block at its end | dev-shell | never committed: `auth.json`, `.env`, dumps; always built: `/vendor`, `web/wp`, uploads. Bedrock's own lines above it stay, plugin and theme wildcards included: the block goes last, so a wildcard in it would re-ignore the premium code the `# BEGIN wordpress-nix` lines un-ignore |
 
 `repo-policy` makes `main` require `ci / flake`, `ci / smoke` and `ci / audit`,
 with no required approval (Dependabot's pull requests must merge with no person

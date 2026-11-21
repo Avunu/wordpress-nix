@@ -88,8 +88,14 @@ def test_sync_writes_the_site_files_and_checks_clean(site, bedrock_lock, monkeyp
         ".editorconfig",
         ".pre-commit-config.yaml",
         "committed.toml",
+        ".gitignore",
     ):
         assert (site / rel).is_file(), rel
+    ignored = (site / ".gitignore").read_text().splitlines()
+    assert ignored[0] == "# >>> wordpress-nix: site (managed) >>>"
+    assert ignored[-1] == "# <<< wordpress-nix: site (managed) <<<"
+    for line in ("auth.json", ".env", "*.sql", "*.sql.gz", "/vendor", "web/wp", "web/app/uploads/*"):
+        assert line in ignored, line
     facts = json.loads((site / ".github/wordpress-nix.json").read_text())
     assert facts == {
         "slug": "fixture",
@@ -100,6 +106,20 @@ def test_sync_writes_the_site_files_and_checks_clean(site, bedrock_lock, monkeyp
     }
     ci = (site / ".github/workflows/ci.yml").read_text()
     assert "site-ci.yml@" in ci and "smoke-runs-on" in ci
+    commit(site, {})
+    assert cli.main(["sync", "--check", "--offline"]) == 0
+
+
+def test_the_gitignore_block_goes_after_the_sites_own_lines(site, bedrock_lock, monkeypatch):
+    _site(site, bedrock_lock)
+    own = "web/app/plugins/*\n# BEGIN wordpress-nix\n!web/app/plugins/premium\n# END wordpress-nix\n"
+    commit(site, {".gitignore": own})
+    monkeypatch.chdir(site)
+    assert cli.main(["sync", "--check", "--offline"]) == 1
+    assert cli.main(["sync", "--write", "--offline"]) == 0
+    text = (site / ".gitignore").read_text()
+    assert text.startswith(own)
+    assert "web/app/plugins/*" not in text[len(own) :]
     commit(site, {})
     assert cli.main(["sync", "--check", "--offline"]) == 0
 

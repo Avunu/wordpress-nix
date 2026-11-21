@@ -24,7 +24,7 @@ few files:
 | `composer.json`, `composer.lock` | core (`roots/wordpress`), wordpress.org plugins and themes (`wp-plugin/*`, `wp-theme/*` from WP Packages), PHP libraries |
 | `nix/vendor-hash` | the hash of everything Composer installs (`nix run .#relock` writes it) |
 | `wordpress-nix.toml` | the standards table: `profile = "deployment"`, the site's facts |
-| `.github/`, `.editorconfig`, `.pre-commit-config.yaml`, `committed.toml` | managed by `wordpress-nix sync` |
+| `.github/`, `.editorconfig`, `.pre-commit-config.yaml`, `committed.toml`, the `site` block of `.gitignore` | managed by `wordpress-nix sync` |
 
 Give it its slug (lowercase, digits, dashes; the repository is `site-<slug>`):
 
@@ -58,8 +58,8 @@ nix flake check --no-pure-eval   # composer-validate, vendor-hash, build, smoke 
 ```
 
 Premium and custom code is committed under `web/app/{plugins,themes,mu-plugins}/<slug>/`,
-each directory whitelisted in the managed block at the end of `.gitignore`
-(`!web/app/plugins/<slug>`).
+each directory whitelisted between `# BEGIN wordpress-nix` and `# END wordpress-nix`
+in `.gitignore` (`!web/app/plugins/<slug>`).
 
 The dev shell (`direnv allow`, or `nix develop --no-pure-eval`) runs the site
 over the checkout: `composer install`, `devenv up`, `wp restore`.

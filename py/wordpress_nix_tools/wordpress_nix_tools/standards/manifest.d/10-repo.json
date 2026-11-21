@@ -1,5 +1,5 @@
 {
-  "$comment": "A site repository's own hygiene files: .editorconfig, .pre-commit-config.yaml and committed.toml.",
+  "$comment": "A site repository's own hygiene files: .editorconfig, .pre-commit-config.yaml, committed.toml and the .gitignore block: what is never committed (dumps, auth.json, .env) or always built (vendor, web/wp, uploads). Bedrock's own lines stay as they are (not absorbed: the template's .gitignore starts with Bedrock's, tests/bedrock-template.nix), and its web/app/plugins/* and theme lines stay outside the block, above the wordpress-init block that un-ignores committed premium code: the block goes to the end of the file, where a plugin wildcard would ignore that code again.",
   "entries": [
     {
       "path": ".editorconfig",
@@ -25,6 +25,14 @@
       "uses": ["commits.allowed-types", "commits.subject-length"],
       "header": "toml",
       "local_regions": ["committed"]
+    },
+    {
+      "path": ".gitignore",
+      "template": "gitignore.j2",
+      "strategy": "sentinel",
+      "module": "dev-shell",
+      "block": "site",
+      "anchor": "eof"
     }
   ]
 }
