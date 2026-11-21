@@ -112,6 +112,45 @@ def test_counts_and_delta_sql():
     assert rep.failed == ["rows b: legacy 2 v3 3"]
 
 
+def test_counts_tolerate_the_audit_strip():
+    sql = verify.counts_sql(["wpx_options", "wpx_posts"], "wpx_")
+    assert "FROM `wpx_options` WHERE `option_name` NOT LIKE '\\_transient\\_%'" in sql
+    assert "FROM `wpx_posts`;" in sql
+    rep = verify.Report()
+    legacy = {"wpx_posts": 10, "wpx_options": 500, "wpx_usermeta": 80, "wpx_fluentform_submissions": 4}
+    v3 = {"wpx_posts": 10, "wpx_options": 470, "wpx_usermeta": 72, "wpx_fluentform_submissions": 4}
+    verify.compare_counts(rep, legacy, v3, "wpx_")
+    assert rep.failed == []
+    assert len(rep.ok) == 2 and len(rep.notes) == 2
+    verify.compare_counts(rep, {"wpx_postmeta": 3}, {"wpx_postmeta": 2}, "wpx_")
+    assert rep.failed == ["rows wpx_postmeta: legacy 3 v3 2"]
+
+
+def test_delta_queries_only_the_tables_the_site_has():
+    since = "2026-11-21 10:00:00"
+    sql = verify.delta_sql("wpx_", since, {"wpx_posts", "wpx_comments"})
+    assert "fluentform" not in sql and "give_donationmeta" not in sql
+    assert "`wpx_posts` WHERE `post_date_gmt` > '2026-11-21 10:00:00' AND `post_type` = 'give_payment'" in sql
+    assert "fluentform_submissions` WHERE `created_at`" in verify.delta_sql("wpx_", since, {"wpx_fluentform_submissions"})
+
+    class Args:
+        site_root = "/nonexistent"
+        prefix = "wpx_"
+        delta_since = since
+
+    asked = []
+
+    def legacy(q):
+        asked.append(q)
+        if q == verify.TABLES_SQL:
+            return "wpx_comments\nwpx_options\nwpx_posts\n"
+        return "wpx_posts\t0\t0\nwpx_comments\t0\t0\nwpx_posts (give_payment)\t0\t0\n"
+
+    lines = []
+    assert verify.run_verify(Args, legacy, None, None, None, log=lines.append) == 0
+    assert "fluentform" not in asked[1] and lines[-1] == "3 ok, 0 failed"
+
+
 def test_http_checks():
     answers = {
         "/": (200, "", '<img src="https://media.fine.example/a.jpg">'),

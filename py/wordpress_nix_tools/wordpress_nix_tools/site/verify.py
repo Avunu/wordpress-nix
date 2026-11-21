@@ -2,7 +2,10 @@
 [--delta-since TS]`` (plan §8.6). Read-only on both sides.
 
 - Per-table row counts, legacy against v3, and the administrators against the
-  survey (a new one fails).
+  survey (a new one fails). Content and plugin tables must match exactly;
+  ``options`` (transients excluded) and ``usermeta`` are reported, never failed:
+  ``db audit --strip`` removes session tokens, application passwords and
+  ``mainwp_child_*`` options by design, and options drift with cron and flushes.
 - ``wp wp-cloud-files status`` (no local-only attachment) and ``verify --sample 200``.
 - ``nix run .#verify-wp-checksums`` when run from the site repository.
 - HTTP posture (§7.3): xmlrpc refused, ``/wp-cron.php`` and ``/.env`` not served,
@@ -11,7 +14,8 @@
   ``--via-socket`` runs them on the node against the FrankenPHP socket with
   ``Host: <domain>`` (before the DNS flip); otherwise over HTTPS.
 - ``--delta-since TS``: the rows legacy gained after the pull (``wp_posts``,
-  ``wp_comments``, Fluent Forms submissions, Give donations), to re-enter by hand.
+  ``wp_comments``, Fluent Forms submissions, Give donations: ``give_payment``
+  posts by date), to re-enter by hand. Only the tables the site has are queried.
   ``--against`` the v3 side after a rollback lists v3's instead.
 """
 
@@ -55,8 +59,17 @@ exec mysql --defaults-extra-file=/dev/fd/3 -N -B "$db"
 TABLES_SQL = "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name;"
 
 
-def counts_sql(tables: list[str]) -> str:
-    parts = [f"SELECT '{t}', COUNT(*) FROM `{t}`" for t in tables]
+NOT_TRANSIENT = "WHERE `option_name` NOT LIKE '\\_transient\\_%' AND `option_name` NOT LIKE '\\_site\\_transient\\_%'"
+
+# Tables the import changes by design (db audit --strip, cron, rewrite flushes):
+# reported, never failed.
+REPORTED_ONLY = ("options", "usermeta")
+
+
+def counts_sql(tables: list[str], prefix: str = "wp_") -> str:
+    parts = [
+        f"SELECT '{t}', COUNT(*) FROM `{t}`{' ' + NOT_TRANSIENT if t == f'{prefix}options' else ''}" for t in tables
+    ]
     return " UNION ALL ".join(parts) + ";"
 
 
@@ -102,15 +115,23 @@ def container_sql(c: Container) -> SqlRunner:
     return run
 
 
-def row_counts(sql: SqlRunner) -> dict[str, int]:
-    tables = [t for t in sql(TABLES_SQL).split() if t]
-    return parse_counts(sql(counts_sql(tables))) if tables else {}
+def tables(sql: SqlRunner) -> list[str]:
+    return [t for t in sql(TABLES_SQL).split() if t]
 
 
-def compare_counts(report: Report, legacy: dict[str, int], v3: dict[str, int]) -> None:
+def row_counts(sql: SqlRunner, prefix: str = "wp_") -> dict[str, int]:
+    names = tables(sql)
+    return parse_counts(sql(counts_sql(names, prefix))) if names else {}
+
+
+def compare_counts(report: Report, legacy: dict[str, int], v3: dict[str, int], prefix: str = "wp_") -> None:
+    reported = {f"{prefix}{t}" for t in REPORTED_ONLY}
     for t in sorted(set(legacy) | set(v3)):
         a, b = legacy.get(t), v3.get(t)
-        report.check(a == b, f"rows {t}: legacy {a} v3 {b}")
+        if t in reported:
+            report.notes.append(f"rows {t}: legacy {a} v3 {b} (not compared: the import strips and drifts it)")
+        else:
+            report.check(a == b, f"rows {t}: legacy {a} v3 {b}")
 
 
 def admins(sql: SqlRunner, prefix: str) -> set[str]:
@@ -121,20 +142,28 @@ def admins(sql: SqlRunner, prefix: str) -> set[str]:
     return {x for x in out.split() if x}
 
 
-DELTA_TABLES = {
-    "posts": ("post_modified_gmt", "ID"),
-    "comments": ("comment_date_gmt", "comment_ID"),
-    "fluentform_submissions": ("created_at", "id"),
-    "give_donationmeta": (None, "meta_id"),
-}
+# (label, table, the time column, the id column, an extra condition). Give keeps
+# its donations as give_payment posts; give_donationmeta has no time column.
+DELTA_TABLES = (
+    ("posts", "posts", "post_modified_gmt", "ID", ""),
+    ("comments", "comments", "comment_date_gmt", "comment_ID", ""),
+    ("fluentform_submissions", "fluentform_submissions", "created_at", "id", ""),
+    ("give_payment", "posts", "post_date_gmt", "ID", "`post_type` = 'give_payment'"),
+)
 
 
-def delta_sql(prefix: str, since: str) -> str:
+def delta_sql(prefix: str, since: str, existing: set[str] | None = None) -> str:
+    """The delta query over the tables in ``existing`` (all of them when None): a site
+    without Fluent Forms has no fluentform_submissions, and MySQL fails a UNION that
+    names a missing table."""
     parts = []
-    for table, (col, idcol) in DELTA_TABLES.items():
+    for label, table, col, idcol, cond in DELTA_TABLES:
         t = f"{prefix}{table}"
-        where = f"WHERE `{col}` > '{since}'" if col else ""
-        parts.append(f"SELECT '{t}', COUNT(*), COALESCE(MAX(`{idcol}`), 0) FROM `{t}` {where}")
+        if existing is not None and t not in existing:
+            continue
+        name = t if label == table else f"{t} ({label})"
+        where = " AND ".join(c for c in (f"`{col}` > '{since}'", cond) if c)
+        parts.append(f"SELECT '{name}', COUNT(*), COALESCE(MAX(`{idcol}`), 0) FROM `{t}` WHERE {where}")
     return " UNION ALL ".join(parts) + ";"
 
 
@@ -183,14 +212,14 @@ def run_verify(args, legacy: SqlRunner, v3: SqlRunner, c: Container, http: Http,
     prefix = args.prefix or (survey.get("wordpress") or {}).get("tablePrefix") or "wp_"
 
     if args.delta_since:
-        out = legacy(delta_sql(prefix, args.delta_since))
+        out = legacy(delta_sql(prefix, args.delta_since, set(tables(legacy))))
         for line in out.splitlines():
             cols = line.split("\t")
             if len(cols) == 3:
                 report.check(cols[1] == "0", f"{cols[0]}: {cols[1]} row(s) since {args.delta_since} (max id {cols[2]})")
         return finish(report, log)
 
-    compare_counts(report, row_counts(legacy), row_counts(v3))
+    compare_counts(report, row_counts(legacy, prefix), row_counts(v3, prefix), prefix)
     confirmed = {a.get("login") for a in survey.get("administrators") or []}
     if confirmed:
         new = admins(v3, prefix) - confirmed
