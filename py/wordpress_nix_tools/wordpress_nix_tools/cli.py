@@ -173,9 +173,11 @@ def register_audit(subparsers, product) -> None:
 
 
 def register_repo_adopt(subparsers, product) -> None:
+    from wordpress_nix_tools import repo_adopt
+
     p = subparsers.add_parser("repo-adopt", help="`repo adopt`: a fresh repository or a pull request (D6)")
     p.add_argument("slug")
-    p.add_argument("--org", default="Avunu")
+    p.add_argument("--org", default=repo_adopt.ORG)
     p.add_argument("--check", action="store_true", help="print the decision, change nothing")
     p.add_argument("--branch", default="main")
     p.add_argument("--dir", default=".")

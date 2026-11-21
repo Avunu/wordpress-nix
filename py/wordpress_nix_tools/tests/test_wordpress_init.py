@@ -169,3 +169,26 @@ def test_suspicious_scan(tmp_path):
     (tmp_path / "a.php").write_text("<?php eval(base64_decode('x'));")
     (tmp_path / "b.php").write_text("<?php echo 1;")
     assert classify.scan_suspicious(tmp_path) == ["a.php"]
+
+
+def test_plan_runs_the_adopt_check(tmp_path, repo, monkeypatch, capsys):
+    from wordpress_nix_tools import repo_adopt
+    from wordpress_nix_tools.wordpress_init import plan
+
+    st = run_for(tmp_path, repo)
+    asked = []
+
+    def decide(self, org, slug):
+        asked.append((org, slug, self.cwd))
+        return repo_adopt.Decision("replace", f"{org}/site-{slug}", ["its history holds backup.sql"])
+
+    monkeypatch.setattr(repo_adopt.Adopter, "decide", decide)
+    assert plan.adopt_check(st) == "Avunu/site-fixture: replace — its history holds backup.sql"
+    assert asked == [("Avunu", "fixture", str(tmp_path))]
+
+    def offline(self, org, slug):
+        raise OSError("cloning Avunu/site-fixture: could not resolve host")
+
+    monkeypatch.setattr(repo_adopt.Adopter, "decide", offline)
+    note = plan.adopt_check(st)
+    assert note.startswith("unavailable (cloning") and "repo adopt fixture --check" in note

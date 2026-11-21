@@ -4,6 +4,7 @@ the tracked-secret audit and the existing-repository note. Pure inspection, so
 
 import os
 
+from wordpress_nix_tools import repo_adopt
 from wordpress_nix_tools.common import data, ui
 from wordpress_nix_tools.wordpress_init import detect
 from wordpress_nix_tools.wordpress_init.secret_files import audit_tracked_secrets
@@ -31,6 +32,16 @@ def _row(item) -> str:
     flags = f"  [{','.join(item.flags)}]" if item.flags else ""
     version = f" {item.version}" if item.version else ""
     return f"  {what + version:<44} {disp:<9} {detail}{flags}"
+
+
+def adopt_check(st: Run) -> str:
+    """What `wordpress-nix repo adopt <name> --check` decides (D6). It asks GitHub; without
+    gh or the network the plan says so and carries on."""
+    try:
+        d = repo_adopt.Adopter(cwd=str(st.root)).decide(repo_adopt.ORG, st.name)
+    except Exception as e:  # noqa: BLE001 — the note is advisory; the plan goes on.
+        return f"unavailable ({str(e).strip() or type(e).__name__}); run `wordpress-nix repo adopt {st.name} --check`"
+    return f"{d.repo}: {d.action} — {'; '.join(d.reasons)}"
 
 
 def print_plan(st: Run) -> None:
@@ -101,7 +112,7 @@ def print_plan(st: Run) -> None:
         ui.step("Existing repository")
         if remote:
             ui.info(f"origin: {remote}")
-            ui.info(f"run `wordpress-nix repo adopt {st.name} --check` to see what D6 decides")
+            ui.info(f"repo adopt --check: {adopt_check(st)}")
         if history:
             st.warn(
                 "this repository's history holds "

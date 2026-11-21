@@ -22,6 +22,7 @@ from wordpress_nix_tools.common.remote import subprocess_runner
 
 Runner = Callable[[Sequence[str], bytes | None], tuple[int, bytes, str]]
 CONVERT_BRANCH = "wordpress-nix/v3"
+ORG = "Avunu"
 
 
 @dataclass
@@ -53,7 +54,14 @@ class Adopter:
         return self.run("git", "-C", self.cwd, *argv)
 
     def exists(self, repo: str) -> bool:
-        return self.run("gh", "repo", "view", repo, "--json", "name")[0] == 0
+        """Whether GitHub has the repository. Anything but gh's not-found answer (no gh,
+        not logged in, no network) is an error, never "it does not exist"."""
+        rc, _, err = self.run("gh", "repo", "view", repo, "--json", "name")
+        if rc == 0:
+            return True
+        if "Could not resolve to a Repository" in err:
+            return False
+        raise OSError(f"gh repo view {repo}: {err.strip() or f'exit {rc}'}")
 
     def history(self, repo: str) -> list[str]:
         tmp = tempfile.mkdtemp(prefix="wordpress-nix-adopt.")

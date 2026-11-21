@@ -78,7 +78,7 @@ Rolling back: `wordpress-nix cutover site --rollback` restores the DNS records, 
    | platform | `mu-plugins/platform-*.php` | ignored: the build injects its own |
 
    Flags: `modified` (the files differ from wordpress.org's: decide with `--accept-modified <slug>:replace|vendor`), `missing-code` (active in the database, absent on disk: `--drop-plugin` it) and `db-code` (code stored in the database: `--keep-plugin` or `--drop-plugin`; WPCodeBox's default commits `wpcodebox_functionality_plugin` and makes `wpcodebox2` development-only, D12) block. `collision`, `not-in-registry`, `delisted`, `writes-to-disk`, `mpdf-tempdir`, `php-floor`, `suspicious-code`, `salt-dependent` and `non-english-locale` are warnings, which `--strict` makes errors.
-3. **Prints the plan**: the table, the runtime writers (§4.8), tracked credentials, and the existing repository's history. `--dry-run` stops here (exit 0); a blocked plan stops a real run (exit 1); declining stops it (exit 6).
+3. **Prints the plan**: the table, the runtime writers (§4.8), tracked credentials, and the existing repository's history. With an `origin` remote it runs `repo adopt --check` and prints what D6 decides (create, replace or pr), or why it could not ask GitHub. `--dry-run` stops here (exit 0); a blocked plan stops a real run (exit 1); declining stops it (exit 6).
 4. **Runs the pipeline.** Check-then-act; the git index and the tree are the state.
    1. `.wordpress-nix-backup/` (gitignored, with a README, `provenance.json` and `plan.json`); `git init` if needed.
    2. Legacy core, `wp-config.php`, `*.sql`, uploads, caches, dropped items and drop-ins move into the backup. Other root files go there too and are listed: move into `web/` any the site serves.
@@ -93,7 +93,7 @@ Rolling back: `wordpress-nix cutover site --rollback` restores the DNS records, 
    11. With `--commit` (and not `--no-loosen`): `wp-plugin/*` and `wp-theme/*` loosened to `^x.y`, relocked, `chore(deps): loosen plugin constraints`.
    12. The report, and the next steps.
 
-An interrupted run resumes from `plan.json`. A run on a converted site reconciles: it adds what is missing and changes nothing else.
+An interrupted run resumes from `plan.json`; a resumed run moves only legacy core, `wp-config.php` and SQL files from the root, never the template it already installed. A run on a converted site reconciles: it adds what is missing and changes nothing else.
 
 ## Salts and credentials
 

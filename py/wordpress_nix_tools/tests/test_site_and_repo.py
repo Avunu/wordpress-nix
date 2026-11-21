@@ -173,8 +173,11 @@ def test_http_checks():
 
 
 def test_repo_adopt_decisions(tmp_path):
-    r = Recorder().on("gh repo view", rc=1)
+    missing = "GraphQL: Could not resolve to a Repository with the name 'Avunu/site-fine'. (repository)"
+    r = Recorder().on("gh repo view", rc=1, err=missing)
     assert repo_adopt.Adopter(r).decide("Avunu", "fine").action == "create"
+    with pytest.raises(OSError, match="not logged in"):
+        repo_adopt.Adopter(Recorder().on("gh repo view", rc=4, err="not logged in")).decide("Avunu", "fine")
     r = Recorder().on("gh repo view", rc=0).on("--name-only", out="wp-config.php\nwp-content/s212682.sql\nREADME.md\n")
     d = repo_adopt.Adopter(r).decide("Avunu", "fine")
     assert d.action == "replace" and "s212682.sql" in d.reasons[0]
