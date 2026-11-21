@@ -13,19 +13,25 @@
 #     - installed, it serves; old admin, login, uploads and content URLs move
 #     - nothing under uploads runs as PHP; private prefixes are refused
 #     - the code tree cannot be written, by PHP or by `wp plugin install`
-#     - Bedrock's environment: settings and environmentFiles, 0400, env-only S3
+#     - Bedrock's environment: settings and environmentFiles, 0400, env-only S3;
+#       the secret nowhere in the system's closure; a secret rotated in place
+#       reaches PHP without a switch
 #     - platform-environment.php: two-factor for administrators, no application
-#       passwords, no update checks, no executable uploads, the constants bridge,
-#       plugins kept to their environment
-#     - a failed migrate is rolled back from its snapshot; the next one succeeds
-#     - every unit has its own /tmp; OOM scores; no permission errors
+#       passwords, no update checks (and no request to make one), no executable
+#       uploads, the constants bridge, plugins kept to their environment (and
+#       kept in the database when another plugin is activated)
+#     - a failed migrate is rolled back from its snapshot; WordPress failing to
+#       load fails the migrate; the next one succeeds
+#     - every unit has its own /tmp; OOM scores; MariaDB not on TCP; no
+#       permission errors
 #   tcp   over :80, uninstalled: the installer, through CAP_NET_BIND_SERVICE
 #
-# Not here yet: wp-cloud-files 0.6 offloading to MinIO with env-only S3_*, and a
-# Woo-downloadable attachment staying local. 0.6 is unreleased (0.5 reads
-# constants only and is a `library`, not a `wordpress-plugin`); until it is,
-# this test stops at what the platform owns: the S3_* names reach PHP from the
-# environment alone, and the private prefixes are refused over HTTP.
+# Not here yet, so M1 stays open: wp-cloud-files 0.6 offloading to MinIO with
+# env-only S3_*, and a Woo-downloadable attachment staying local. 0.6 is
+# unreleased (0.5 reads constants only and is a `library`, not a
+# `wordpress-plugin`); until it is, this test stops at what the platform owns:
+# the S3_* names reach PHP from the environment alone, and the private prefixes
+# are refused over HTTP.
 {
   pkgs,
   wordpressModule,
@@ -46,7 +52,10 @@ let
     ];
   };
 
-  # What the cluster's secrets would hold: the salts and the S3 key pair.
+  # What the cluster's secrets would hold: the salts and the S3 key pair. The
+  # S3 secret is a distinctive (and plainly fake) marker, to be looked for in
+  # the system's closure.
+  s3Secret = "s3-secret-closure-probe-marker";
   secrets = pkgs.writeText "module-test-env" ''
     ${pkgs.lib.concatMapStrings (k: "${k}='test-${pkgs.lib.toLower k}-0123456789abcdef'\n") [
       "AUTH_KEY"
@@ -59,7 +68,7 @@ let
       "NONCE_SALT"
     ]}
     S3_KEY='test-key'
-    S3_SECRET='test-secret'
+    S3_SECRET='${s3Secret}'
   '';
 
   common = {
@@ -121,6 +130,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
+    import hashlib
     import json
     import shlex
 
@@ -164,8 +174,13 @@ pkgs.testers.runNixOSTest {
         site.succeed(f"test \"$(readlink {PKG}/.env)\" = /run/wordpress/bedrock.env")
         site.succeed("grep -qx \"S3_KEY='test-key'\" /run/wordpress/bedrock.env")
         site.succeed("grep -qx \"WP_ENV='production'\" /run/wordpress/bedrock.env")
-        # The secret is nowhere in the store; the non-secret settings are.
-        site.fail("grep -rl test-secret /nix/store/*-wordpress-nix-settings.env")
+        # The secret is in the system's closure only in this test's own
+        # secrets file (a store path here, agenix's /run/agenix in the cluster).
+        site.succeed("grep -qF ${s3Secret} ${secrets}")
+        site.succeed("nix-store -qR /run/current-system | grep -vxF ${secrets} > /tmp/closure")
+        site.succeed("grep -qxF ${package} /tmp/closure")
+        found = site.succeed("xargs -a /tmp/closure grep -rlFs ${s3Secret} || true").strip()
+        assert found == "", f"the S3 secret is in the store:\n{found}"
 
     with subtest("installed, the site serves"):
         wp("core install --url=http://localhost --title=ModuleSite --admin_user=admin"
@@ -237,8 +252,21 @@ pkgs.testers.runNixOSTest {
         wp("user create sub sub@example.com --role=subscriber --user_pass=sub_pw_123")
         assert php('var_export(Two_Factor_Core::is_user_using_two_factor(get_user_by("login", "sub")->ID));') == "false"
         assert php("var_export(wp_is_application_passwords_available());") == "false"
-        # No update checks: the transients are answered locally.
+        # No update checks: the transients are answered locally, core's checks
+        # are unhooked, and one started anyway never leaves.
         assert php('echo json_encode(get_site_transient("update_plugins")->response);') == "[]"
+        site.succeed("rm -f /var/lib/wordpress/probe-http.log")
+        for event in ("wp_update_plugins", "wp_update_themes", "wp_version_check"):
+            wp(f"cron event schedule {event} now")
+            wp(f"cron event run {event}")
+        php('do_action("load-plugins.php"); do_action("load-themes.php"); do_action("load-update-core.php");')
+        wp("plugin list")
+        assert php('echo wp_remote_post("https://api.wordpress.org/plugins/update-check/1.1/")->get_error_code();') \
+            == "wordpress_nix_read_only"
+        php('wp_remote_get("http://probe.invalid/");')  # the probe sees what does leave
+        site.succeed("grep -q probe.invalid /var/lib/wordpress/probe-http.log")
+        site.fail("grep api.wordpress.org /var/lib/wordpress/probe-http.log")
+        assert php('echo has_action("init", "wp_schedule_update_checks") ? "on" : "off";') == "off"
         # The constants bridge and the admin memory limit.
         assert php("echo WC_LOG_HANDLER;") == "WC_Log_Handler_DB"
         assert php("var_export(S3_DIRECT_UPLOADS);") == "true"
@@ -249,6 +277,19 @@ pkgs.testers.runNixOSTest {
         # Development-only plugins never load in production.
         assert php('echo json_encode(wp_platform_filter_active_plugins(["wpcodebox2/wpcodebox2.php", "two-factor/two-factor.php"]));') \
             == '["two-factor\\/two-factor.php"]'
+        # ... and stay active in the database when a plugin is (de)activated
+        # here (a `wp restore` into dev still has WPCodeBox on).
+        raw = "global $wpdb; echo $wpdb->get_var(\"SELECT option_value FROM $wpdb->options WHERE option_name = 'active_plugins'\");"
+        php('global $wpdb; $p = get_option("active_plugins"); $p[] = "wpcodebox2/wpcodebox2.php";'
+            ' $wpdb->update($wpdb->options, ["option_value" => serialize($p)], ["option_name" => "active_plugins"]);')
+        assert "wpcodebox2/wpcodebox2.php" in php(raw)
+        assert "wpcodebox2" not in php('echo json_encode(get_option("active_plugins"));')
+        wp("plugin deactivate two-factor")
+        stored = php(raw)
+        assert "wpcodebox2/wpcodebox2.php" in stored and "two-factor" not in stored, stored
+        wp("plugin activate two-factor")
+        stored = php(raw)
+        assert "wpcodebox2/wpcodebox2.php" in stored and "two-factor/two-factor.php" in stored, stored
         # Production sends mail.
         assert php('echo has_filter("pre_wp_mail") ? "off" : "on";') == "on"
 
@@ -265,6 +306,13 @@ pkgs.testers.runNixOSTest {
         assert request("/") == "200"
 
         site.succeed("rm /var/lib/wordpress/probe-fail-migrate")
+
+        # WordPress that does not load is a failed migrate, not "not installed".
+        site.succeed("touch /var/lib/wordpress/probe-broken")
+        site.fail("systemctl restart wordpress-migrate.service")
+        site.succeed("journalctl -u wordpress-migrate -o cat | grep -q 'is-installed failed (exit 255)'")
+        site.succeed("rm /var/lib/wordpress/probe-broken")
+
         site.succeed("systemctl restart wordpress-migrate.service")
         unit_ok("wordpress-migrate.service")
         site.succeed(f"test \"$(cat /var/lib/wordpress/.wordpress-migrate-build)\" = {PKG}")
@@ -283,7 +331,30 @@ pkgs.testers.runNixOSTest {
         site.succeed("systemctl show -p OOMScoreAdjust mysql | grep -qx OOMScoreAdjust=-500")
         site.succeed("systemctl show -p OOMScoreAdjust frankenphp | grep -qx OOMScoreAdjust=300")
         site.fail("ss -HltnO | grep -qE ':(80|443)\\s'")
+        # MariaDB is on its unix socket only.
+        listening = site.succeed("ss -Hltn")
+        assert ":3306" not in listening, listening
+        site.succeed("test -S /run/mysqld/mysqld.sock")
         site.succeed("stat -c '%a' /run/wordpress/wp.sock | grep -qx 660")
+
+    with subtest("a secret rotated in place reaches PHP without a switch"):
+        before = site.succeed("systemctl show -p InvocationID --value frankenphp").strip()
+        site.succeed(
+            "sed s/test-key/rotated-key/ /etc/wordpress-secrets.env > /etc/wordpress-secrets.env.new"
+            " && chmod 0400 /etc/wordpress-secrets.env.new"
+            " && mv -f /etc/wordpress-secrets.env.new /etc/wordpress-secrets.env"
+        )
+        site.wait_until_succeeds("grep -qx \"S3_KEY='rotated-key'\" /run/wordpress/bedrock.env", timeout=60)
+        site.wait_for_unit("frankenphp.service")
+        site.wait_for_file("/run/wordpress/wp.sock")
+        assert site.succeed("systemctl show -p InvocationID --value frankenphp").strip() != before
+        want = hashlib.md5(b"rotated-key").hexdigest()
+        site.wait_until_succeeds(
+            "curl -sS --max-time 30 --unix-socket /run/wordpress/wp.sock http://localhost/wp-json/probe/v1/env"
+            f" | jq -e '.s3_key_md5 == \"{want}\"'",
+            timeout=60,
+        )
+        unit_ok("wordpress-migrate.service")
 
     with subtest("no permission errors in the journal"):
         journal = site.succeed(

@@ -54,7 +54,10 @@ Bedrock reads `${package}/.env`, a link to `/run/wordpress/bedrock.env`.
   development-only plugin lists.
 - `environmentFiles`: `KEY='value'` files appended after the settings, read
   through systemd's `LoadCredential` (so they may be root's 0400 files), never
-  copied to the store. The salts, `S3_KEY`/`S3_SECRET`, mail tokens.
+  copied to the store. The salts, `S3_KEY`/`S3_SECRET`, mail tokens. A file
+  rewritten in place (a rotated agenix secret keeps its path) is noticed by
+  `wordpress-env.path`, which restarts `wordpress-init`, and with it
+  `frankenphp` and `wordpress-migrate`.
 
 `config/application.php` is never edited. What Bedrock does not define comes
 from the environment through `mu-plugins/platform-environment.php`.
@@ -77,7 +80,8 @@ frankenphp, migrate, cron).
 | Unit | What |
 |---|---|
 | `wordpress-init` | Writes `bedrock.env`; makes `uploadsDir` |
-| `mysql` | `database.createLocally` (the default): unix_socket auth, so no password |
+| `wordpress-env.path` | Restarts `wordpress-init` when an `environmentFiles` entry changes |
+| `mysql` | `database.createLocally` (the default): unix_socket auth, so no password; `skip-networking`, so nothing on TCP |
 | `wordpress-migrate` | Before `frankenphp`, on every new build; below |
 | `frankenphp` | Caddy and PHP. `socketPath`, or `:80` (and `:443` with `domain`) |
 | `wordpress-cron.timer` | Every minute, `wp cron event run --due-now`; `cron.randomizedDelaySec` spreads sites apart |
@@ -98,7 +102,9 @@ Frappe's:
 1. **check**: finish a rollback a restart interrupted; skip when this build
    already migrated (`stateDir/.wordpress-migrate-build`), and when the database
    has no tables or no installed WordPress (the first boot before
-   `site import`), so an empty site starts cleanly;
+   `site import`), so an empty site starts cleanly. Only `wp core is-installed`'s
+   own "not installed" (exit 1) skips; any other failure (a PHP fatal in the new
+   build) fails the unit;
 2. **snapshot**: `mysqldump | gzip` into `stateDir/snapshots` (0700, each 0600),
    verified by mysqldump's closing line before anything relies on it;
 3. **migrate**: `wp core update-db`, `wp wc update` when WooCommerce is active,
@@ -139,10 +145,16 @@ address from `CF-Connecting-IP` and the scheme from `X-Forwarded-Proto` (a
   `image_memory_limit` filters (core defines the constant before plugins load).
 - **Plugins kept to their environment:** `WORDPRESS_NIX_PRODUCTION_ONLY_PLUGINS`
   are dropped from `active_plugins` outside production,
-  `WORDPRESS_NIX_DEVELOPMENT_ONLY_PLUGINS` outside development, without
-  touching the database.
+  `WORDPRESS_NIX_DEVELOPMENT_ONLY_PLUGINS` outside development, as the option
+  is read. When it is written (activating or deactivating any plugin), their
+  stored entries are put back (`pre_update_option_active_plugins`), so the
+  database keeps each plugin's state.
 - **No update checks** while `DISALLOW_FILE_MODS`: the update transients are
-  answered locally, and Site Health drops `background_updates`,
+  answered locally, core's checks are unhooked (`wp_version_check`,
+  `wp_update_plugins`, `wp_update_themes`: their cron events, the `load-*`
+  screens, `admin_init`, their scheduling), a check started elsewhere (`wp
+  plugin list`) is refused at `pre_http_request` before it reaches
+  api.wordpress.org, and Site Health drops `background_updates`,
   `plugin_theme_auto_updates`, `update_temp_backup_writable` and
   `available_updates_disk_space`.
 - **Two-factor for administrators** (production): every user who can
@@ -151,6 +163,10 @@ address from `CF-Connecting-IP` and the scheme from `X-Forwarded-Proto` (a
   two-factor 0.10.0: the filter is applied with the enabled list and the user
   ID, `two_factor_primary_provider_for_user` and `two_factor_providers` exist
   as well, and the Email provider is available to every user.
+- **PDF temp files in /tmp:** dk-pdf's mPDF `tempDir` through
+  `dkpdf_mpdf_temp_dir` (checked against dk-pdf 2.3.1). give-pdf-receipts 3.3.0
+  needs nothing: its TCPDF caches in `sys_get_temp_dir()`, and its export
+  directory is under uploads.
 - **Application passwords** off unless `WORDPRESS_NIX_APPLICATION_PASSWORDS=true`.
 - **No executable uploads:** `wp_handle_upload_prefilter` refuses a name with an
   executable extension anywhere in it.
