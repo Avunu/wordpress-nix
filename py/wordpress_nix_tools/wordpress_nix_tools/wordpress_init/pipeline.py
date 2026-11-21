@@ -130,15 +130,27 @@ def load_plan(st: Run) -> bool:
     return True
 
 
+# What a resumed conversion may still move from the root: the template has landed,
+# so composer.*, config/, web/, nix/, wp-cli.yml and flake.* are the site's own now.
+RESUME_AT_ROOT = {*detect.CORE_PATHS, "wp-config.php"}
+
+
+def legacy_at_root(st: Run, name: str) -> bool:
+    if name in KEEP_AT_ROOT:
+        return False
+    if st.resumed:
+        return name in RESUME_AT_ROOT or name.endswith((".sql", ".sql.gz"))
+    return not (name in ("flake.nix", "flake.lock") and st.shape != "v2")
+
+
 def relocate_legacy(st: Run) -> None:
     """Step 2: legacy core, wp-config.php, *.sql, uploads/cache/upgrade, dropped items
-    and drop-ins into the backup; a v2 flake too."""
+    and drop-ins into the backup; a v2 flake too. A resumed run sweeps only legacy
+    core, wp-config.php and SQL files from the root."""
     root, legacy = st.root, backup(st) / "legacy"
     moved: list[str] = []
     for name in sorted(os.listdir(root)):
-        if name in KEEP_AT_ROOT:
-            continue
-        if name in ("flake.nix", "flake.lock") and st.shape != "v2":
+        if not legacy_at_root(st, name):
             continue
         if move(root / name, legacy / name):
             moved.append(name)
@@ -171,6 +183,7 @@ def relocate_code(st: Run) -> None:
     for item in st.committed:
         src, dest = root / item.source, root / item.target
         if dest.exists():
+            # Done by an earlier run: what is left in wp-content goes to the backup below.
             continue
         if move(src, dest):
             ui.info(f"→ {item.target}")

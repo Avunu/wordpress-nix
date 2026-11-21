@@ -46,7 +46,7 @@ FAKE_HASH=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 bash "$MAKE_WP" "$ROOT/fx" > /dev/null
 export WORDPRESS_NIX_CATALOG="$ROOT/fx/catalog.json"
 DECIDE=(--accept-modified modified-plugin:replace --accept-modified fixture-parent:vendor --drop-plugin ghost-plugin)
-for copy in dry blocked locked lockfail; do cp -a "$ROOT/fx/site" "$ROOT/$copy"; done
+for copy in dry blocked locked lockfail resume; do cp -a "$ROOT/fx/site" "$ROOT/$copy"; done
 
 echo "── help ─────────────────────────────────────────────────────"
 "$wordpress_init" --help > "$ROOT/help.txt"
@@ -146,6 +146,30 @@ status1="$(git status --porcelain)"
 check "the second run reconciled" grep -q 'reconciling' "$ROOT/run2.log"
 check_eq "the index is unchanged" "$tree1" "$(git write-tree)"
 check_eq "the tree is unchanged" "$status1" "$(git status --porcelain)"
+
+echo "── an interrupted conversion resumes ────────────────────────"
+cd "$ROOT/resume"
+"$wordpress_init" --migrate -y --skip-lock --name fixture "${DECIDE[@]}" > "$ROOT/resume1.log" 2>&1 \
+  || { cat "$ROOT/resume1.log"; no "the conversion to resume failed"; }
+# Back to where an interrupted run stops after the template lands: wp-content still
+# holds a committed plugin, and a legacy file is at the root.
+mkdir -p wp-content/plugins
+mv web/app/plugins/unregistered-plugin wp-content/plugins/
+git rm -rq --cached web/app/plugins/unregistered-plugin
+cp .wordpress-nix-backup/legacy/wp-config.php wp-config.php
+exits 0 "$ROOT/resume" -y --skip-lock
+check "the rerun resumed from plan.json" grep -q 'resuming the conversion' "$ROOT/last.log"
+for f in composer.json config/application.php web/wp-config.php nix/vendor-hash wp-cli.yml flake.nix \
+  web/app/plugins/premium-plugin/premium-plugin.php; do
+  check "resume kept $f" test -e "$f"
+done
+for d in composer.json config web nix wp-cli.yml flake.nix; do
+  check "resume moved no template file: $d" test ! -e ".wordpress-nix-backup/legacy/$d"
+done
+check "resume moved the remaining plugin" git ls-files --error-unmatch -- web/app/plugins/unregistered-plugin
+check "resume emptied wp-content" test ! -e wp-content
+check "resume swept wp-config.php again" test ! -e wp-config.php -a -e .wordpress-nix-backup/legacy/wp-config.php.1
+cd "$ROOT/fx/site"
 
 echo "── guard rails ──────────────────────────────────────────────"
 exits 6 "$ROOT/fx/multisite" --migrate -y --skip-lock
