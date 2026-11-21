@@ -12,7 +12,8 @@ name: site-audit
 #   vendor-rebuild   (weekly) `nix build --rebuild .#vendor`: the vendor tree fetched
 #                    again from the registries must hash as nix/vendor-hash says. A
 #                    mismatch under an unchanged lock is a security event: an issue,
-#                    "Vendor hash drift" (security), never a relock.
+#                    "Vendor hash drift" (security), never a relock. Any other
+#                    failure (an outage, an evaluation error) only fails the job.
 #   cluster-compat   (daily; not a required check) the site built with the wordpress-nix
 #                    and nixpkgs the cluster pins (§4.7): the revisions are read from the
 #                    cluster repository's flake.lock with the App's token on a hosted
@@ -169,7 +170,10 @@ jobs:
 
       # No binary cache: the point is to fetch it again from the registries. The first build
       # makes sure the path is there (built or substituted); --rebuild then fetches it again
-      # and compares.
+      # and compares. Drift is only what Nix itself says of the output: a fixed-output hash
+      # mismatch, or --rebuild's "output … differs". Any other failure (a registry's 5xx, DNS,
+      # a timeout, an evaluation error) fails the job and leaves the issue alone, so an outage
+      # never files a security event.
       - id: rebuild
         name: nix build --rebuild .#vendor
         run: |
@@ -179,7 +183,15 @@ jobs:
             nix build --no-link .#vendor && nix build --no-link --rebuild .#vendor
           } > "$RUNNER_TEMP/rebuild.log" 2>&1 || status=$?
           tail -n 40 "$RUNNER_TEMP/rebuild.log"
-          echo "drift=$([ "$status" = 0 ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+          if [ "$status" = 0 ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          elif grep -qE "hash mismatch in fixed-output derivation|may not be deterministic: output .* differs" \
+            "$RUNNER_TEMP/rebuild.log"; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::the vendor tree did not build (status $status), with no hash mismatch: not drift, see the log"
+            exit "$status"
+          fi
 
       - if: steps.rebuild.outputs.drift == 'true'
         name: Open the "Vendor hash drift" issue (never a relock)
