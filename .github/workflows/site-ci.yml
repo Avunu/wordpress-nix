@@ -430,8 +430,9 @@ jobs:
           persist-credentials: false
 
       # The lines the change adds to committed code (web/app/{plugins,themes,mu-plugins}),
-      # each pattern a warning on its line. Advisory: it never fails, and main does not
-      # require it.
+      # each pattern a warning on its line: every added line counts, an empty one or one that
+      # starts with `+` too, and only a file's header (before its first hunk) is `+++`.
+      # Advisory: it never fails, and main does not require it.
       - name: What the change adds to committed premium and custom code
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -457,5 +458,11 @@ jobs:
               fi
             done
           done < <(git diff --unified=0 --no-color "$base" HEAD -- 'web/app/plugins' 'web/app/themes' 'web/app/mu-plugins' \
-            | awk '/^\+\+\+ b\//{file=substr($0,7)} /^@@/{split($3,a,/[,+]/); line=a[2]-1} /^\+[^+]/{line++; print file "\t" line "\t" substr($0,2)} /^ /{line++}')
+            | awk '
+                /^diff --git /{hdr=1; file=""; next}
+                hdr && /^\+\+\+ /{if (substr($0,5,2) == "b/") file=substr($0,7); next}
+                hdr && !/^@@/{next}
+                /^@@/{hdr=0; split($3,a,/[,+]/); line=a[2]-1; next}
+                /^\+/{line++; print file "\t" line "\t" substr($0,2); next}
+                /^ /{line++}')
           echo "premium-diff: $n line(s) to read" | tee -a "$GITHUB_STEP_SUMMARY"
