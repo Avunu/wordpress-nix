@@ -15,6 +15,22 @@ and served read-only.
 composer update --no-install          # or: composer require wp-plugin/<slug>
 nix run .#relock                      # rewrites nix/vendor-hash
 nix build                             # the site: result/web is the document root
-nix flake check                       # composer-validate, vendor-hash, build
+nix flake check --no-pure-eval        # composer-validate, vendor-hash, build
 nix run .#verify-wp-checksums         # the build against wordpress.org (network)
 ```
+
+## Developing
+
+The dev shell (direnv loads it through `.envrc`; by hand,
+`nix develop --no-pure-eval`) runs the site the way production does, over this
+checkout, with `WP_ENV=development` (file modifications allowed):
+
+```sh
+composer install                      # core, plugins and vendor/ into the tree
+devenv up                             # FrankenPHP + MariaDB + Mailpit
+wp restore                            # the newest dev-restore dump of the site
+wp-admin-user                         # a local administrator
+```
+
+Secrets a plugin needs locally (`S3_KEY`, ...) go in `.env`, which the shell
+writes once with fresh salts and git ignores.

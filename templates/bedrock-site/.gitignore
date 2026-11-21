@@ -39,6 +39,10 @@ result-*
 .direnv/
 .devenv/
 
+# wordpress-nix: the platform mu-plugins the dev shell copies in (the build
+# injects its own)
+web/app/mu-plugins/platform-*.php
+
 # BEGIN wordpress-nix (managed): committed premium and custom code, one line each
 # !web/app/plugins/<slug>
 # END wordpress-nix
