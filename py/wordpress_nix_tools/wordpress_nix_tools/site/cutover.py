@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from wordpress_nix_tools.common import records
-from wordpress_nix_tools.common.cloudflare import Cloudflare, CloudflareError, Zone
+from wordpress_nix_tools.common.cloudflare import ADDRESS_TYPES, Cloudflare, CloudflareError, Zone
 from wordpress_nix_tools.edge.provision import REF_HTML, clean_rule, tunnel_name
 
 PHASES = ("http_request_cache_settings", "http_request_transform", "http_response_headers_transform")
@@ -157,8 +157,10 @@ def rollback(cf: Cloudflare, root: Path, slug: str, *, log=print) -> dict:
     zone = cf.zone_for(record["domain"])
     if zone is None:
         raise CloudflareError(f"no zone for {record['domain']}", {})
-    for name, wanted in snap["dns"].items():
-        for r in cf.records(zone, name):
+    for name, snapped in snap["dns"].items():
+        # Only the address records were flipped; MX, TXT and the rest stay as they are.
+        wanted = [r for r in snapped if r.get("type") in ADDRESS_TYPES]
+        for r in cf.address_records(zone, name):
             cf.ok("DELETE", f"/zones/{zone.id}/dns_records/{r['id']}", context=f"removing {name}")
         for r in wanted:
             cf.ok("POST", f"/zones/{zone.id}/dns_records", r, context=f"restoring {name}")

@@ -157,7 +157,7 @@ def test_media_adopt_requires_the_bucket(fake):
 
 def strip_ids(records):
     return sorted(
-        ({k: v for k, v in r.items() if k != "id"} for r in records), key=lambda r: (r["name"], r["type"], r["content"])
+        ({k: v for k, v in r.items() if k != "id"} for r in records), key=lambda r: (r["name"], r["type"], str(r.get("content", "")))
     )
 
 
@@ -195,3 +195,32 @@ def test_cutover_and_rollback_are_exact(fake, tmp_path):
     assert after == before
     assert fake.purges == 3
     assert cut.records.read(cut.record_path(tmp_path, "fine"))["state"] == "rolled-back"
+
+
+def test_cutover_leaves_mail_and_txt_records_alone(fake, tmp_path):
+    cf = Cloudflare(transport=fake)
+    zid = "zone-fine.example"
+    keep = [
+        {"id": "mx1", "type": "MX", "name": "fine.example", "content": "mx.mail.example", "priority": 10, "ttl": 1},
+        {"id": "txt1", "type": "TXT", "name": "fine.example", "content": "v=spf1 include:mail.example -all", "ttl": 1},
+        {"id": "txt2", "type": "TXT", "name": "fine.example", "content": "google-site-verification=abc", "ttl": 1},
+        {"id": "caa1", "type": "CAA", "name": "fine.example", "data": {"tag": "issue", "value": "x"}, "ttl": 1},
+    ]
+    # The MX record comes first, where cname() used to take the record to turn into the CNAME.
+    fake.dns[zid] = keep[:1] + fake.dns[zid] + keep[1:]
+    edge.provision(cf, "fine", "fine.example", cluster="ovh-01", access=False, emails=[], **QUIET)
+    before = strip_ids([r for r in fake.dns[zid] if r["name"] in ("fine.example", "www.fine.example")])
+
+    record = cut.cutover(cf, tmp_path, "fine", "fine.example", **QUIET)
+    apex = [r for r in fake.dns[zid] if r["name"] == "fine.example"]
+    assert [r for r in apex if r["type"] not in ("A", "AAAA", "CNAME")] == keep
+    assert [(r["type"], r["content"]) for r in apex if r["type"] == "CNAME"] == [
+        ("CNAME", f"{record['tunnel']}.cfargotunnel.com")
+    ]
+    assert not [r for r in apex if r["type"] in ("A", "AAAA")]
+
+    cut.rollback(cf, tmp_path, "fine", **QUIET)
+    after = [r for r in fake.dns[zid] if r["name"] in ("fine.example", "www.fine.example")]
+    assert strip_ids(after) == before
+    # Untouched, not deleted and recreated: the same record ids.
+    assert [r for r in after if r["id"] in {k["id"] for k in keep}] == keep

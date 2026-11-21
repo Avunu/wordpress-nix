@@ -3,7 +3,7 @@ token from ``WORDPRESS_NIX_CLOUDFLARE_TOKEN``.
 
 Ported helpers: ``zone_for`` (walk up the labels from the hostname itself, so an
 apex resolves), ``account_for`` (the zone's account: where a tunnel, a bucket and
-an Access app must live), ``cname`` (proxied, idempotent, replacing any record),
+an Access app must live), ``cname`` (proxied, idempotent, replacing only the name's A/AAAA/CNAME records),
 ``can_mint_account_token`` (the 9d83999 probe: an empty POST is refused with 9109
 before the body is read when the token cannot mint).
 
@@ -22,6 +22,7 @@ from typing import Any
 
 API = "https://api.cloudflare.com/client/v4"
 TOKEN_ENV = "WORDPRESS_NIX_CLOUDFLARE_TOKEN"
+ADDRESS_TYPES = ("A", "AAAA", "CNAME")
 
 Transport = Callable[[str, str, Any], dict]
 
@@ -131,20 +132,26 @@ class Cloudflare:
     def records(self, zone: Zone, name: str) -> list[dict]:
         return self.ok("GET", f"/zones/{zone.id}/dns_records?name={name}", context=f"listing {name}") or []
 
+    def address_records(self, zone: Zone, name: str) -> list[dict]:
+        """The A, AAAA and CNAME records at a name: the ones a CNAME flip replaces.
+        MX, TXT (SPF, site verification), CAA, SRV and the rest are never touched."""
+        return [r for r in self.records(zone, name) if r.get("type") in ADDRESS_TYPES]
+
     def cname(self, host: str, target: str, *, proxied: bool = True, ttl: int = 1) -> str:
-        """CNAME host → target. Replaces any record at the name (the cutover flip).
-        Returns "created", "updated" or "unchanged"."""
+        """CNAME host → target. Replaces the A, AAAA or CNAME records at the name (the
+        cutover flip) and leaves every other type alone. Returns "created", "updated"
+        or "unchanged"."""
         zone = self.zone_for(host)
         if zone is None:
             raise CloudflareError(f"no zone owns {host}", {})
         body = {"type": "CNAME", "name": host, "content": target, "proxied": proxied, "ttl": ttl}
-        existing = self.records(zone, host)
+        existing = self.address_records(zone, host)
         if existing:
             r = existing[0]
             if len(existing) == 1 and (r.get("type"), r.get("content"), r.get("proxied")) == ("CNAME", target, proxied):
                 return "unchanged"
-            # A name holds one CNAME or A/AAAA records, never both: the others go
-            # first, or Cloudflare refuses the CNAME.
+            # A name holds one CNAME or A/AAAA records, never both: the other
+            # address records go first, or Cloudflare refuses the CNAME.
             for extra in existing[1:]:
                 self.ok("DELETE", f"/zones/{zone.id}/dns_records/{extra['id']}", context=f"removing {host}")
             self.ok("PUT", f"/zones/{zone.id}/dns_records/{r['id']}", body, context=f"updating {host}")
