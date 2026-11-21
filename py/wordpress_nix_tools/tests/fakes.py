@@ -59,6 +59,9 @@ class FakeCloudflare:
             if method == "GET":
                 return ok([r for r in self.dns[zid] if r["name"] == q.get("name")])
             if method == "POST":
+                same = [r for r in self.dns[zid] if r["name"] == body["name"]]
+                if same and (body["type"] == "CNAME" or any(r["type"] == "CNAME" for r in same)):
+                    return fail(81053, "An A, AAAA, or CNAME record with that host already exists.")
                 r = {"id": self.next_id("rec"), **body}
                 self.dns[zid].append(r)
                 return ok(r)
@@ -68,6 +71,10 @@ class FakeCloudflare:
             recs = self.dns[zid]
             idx = next(i for i, r in enumerate(recs) if r["id"] == rid)
             if method == "PUT":
+                others = [r for r in recs if r["name"] == body["name"] and r["id"] != rid]
+                if body["type"] == "CNAME" and others:
+                    # Cloudflare: a CNAME cannot share its name with other records.
+                    return fail(81053, "An A, AAAA, or CNAME record with that host already exists.")
                 recs[idx] = {"id": rid, **body}
                 return ok(recs[idx])
             if method == "DELETE":

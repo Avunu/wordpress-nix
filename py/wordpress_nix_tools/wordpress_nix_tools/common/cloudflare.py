@@ -141,12 +141,13 @@ class Cloudflare:
         existing = self.records(zone, host)
         if existing:
             r = existing[0]
-            if (r.get("type"), r.get("content"), r.get("proxied")) == ("CNAME", target, proxied):
+            if len(existing) == 1 and (r.get("type"), r.get("content"), r.get("proxied")) == ("CNAME", target, proxied):
                 return "unchanged"
-            self.ok("PUT", f"/zones/{zone.id}/dns_records/{r['id']}", body, context=f"updating {host}")
-            # A name holds one CNAME, or A/AAAA records: the others go.
+            # A name holds one CNAME or A/AAAA records, never both: the others go
+            # first, or Cloudflare refuses the CNAME.
             for extra in existing[1:]:
                 self.ok("DELETE", f"/zones/{zone.id}/dns_records/{extra['id']}", context=f"removing {host}")
+            self.ok("PUT", f"/zones/{zone.id}/dns_records/{r['id']}", body, context=f"updating {host}")
             return "updated"
         self.ok("POST", f"/zones/{zone.id}/dns_records", body, context=f"creating {host}")
         return "created"
