@@ -18,10 +18,16 @@ cron timer.
 - **A new site.** `nix flake init -t github:Avunu/wordpress` lays down
   `templates/bedrock-site`; then `composer update && nix run .#relock`. Or
   `nix run github:Avunu/wordpress` ([the scaffolder](reference/scaffolder.md)).
+  See [Getting started](getting-started.md).
 - **A legacy site.** `wordpress-nix legacy pull`, then
   `nix run github:Avunu/wordpress -- --migrate` on the pulled copy, then the
   data and edge commands: see [Convert a legacy WordPress site](scaffolding/migrate.md)
   and [the CLI](reference/wordpress-nix-cli.md).
+- **Site CI and updates.** `wordpress-nix` (py/wordpress_nix_tools, on
+  python-devops-nix's standards-core) renders each site's managed files, and
+  the reusable `site-ci.yml`, `site-deps.yml` and `site-audit.yml` gate, relock
+  and audit it. See [Site CI](production/site-ci.md) and
+  [Releases and the cluster](production/releases.md).
 
 ## Features
 
@@ -57,11 +63,14 @@ modules/nixos.nix               # services.wordpress-nix
 modules/site.nix                # wordpress-nix.site: a site flake's packages, apps, checks
 modules/devenv.nix              # a site flake's dev shell
 mu-plugins/                     # injected into every build
+lib/site-smoke.nix              # a site's checks.smoke (ci / smoke)
 templates/bedrock-site/         # nix flake init -t github:Avunu/wordpress
 lib/tools.nix                   # wordpress-init and wordpress-nix (py/wordpress_nix_tools)
-py/wordpress_nix_tools/         # the scaffolder, the conversion commands, the standards product
+py/wordpress_nix_tools/         # the scaffolder, the conversion commands, the site standards
 data/                           # presets, drop list, runtime writers, premium slugs, ...
 tests/                          # the build, the template, the module (VM), logging
+.github/workflows/site-*.yml    # the reusable workflows site repositories call
+.github/workflows/rollout.yml   # a release to every site repository
 tools/                          # audit-mysql-dump, restore-core-keys, verify-wp-checksums
 ```
 
@@ -92,9 +101,13 @@ odoo-nix:
 
 `nix flake check` runs the Bedrock build over an offline fixture, the template
 against the pinned Bedrock tag, `verify-wp-checksums` against a local stand-in
-for wordpress.org, the dump tools, the logging contract, and the NixOS VM test
-(`checks.<system>.module`, which needs KVM and fetches the template's Composer
-packages).
+for wordpress.org, the dump tools, the logging contract, wordpress-nix-tools'
+suites (`tools`), the template against what `wordpress-nix sync` renders
+(`site-template-sync`), and two NixOS VM tests that need KVM and fetch the
+template's Composer packages: the module (`checks.<system>.module`) and a
+site's smoke test over the template (`site-smoke`). `selftest-scaffold.yml`
+covers what needs the network: a new site, a Composer change, the relock and
+the pipeline's checks on it.
 
 ## License
 
