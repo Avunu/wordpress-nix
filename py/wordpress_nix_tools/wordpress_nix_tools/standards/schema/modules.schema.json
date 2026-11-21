@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "modules.schema.json",
+  "title": "wordpress-nix's modules for a WordPress site repository",
+  "$defs": {
+    "module-name": {
+      "enum": [
+        "dev-shell",
+        "editorconfig",
+        "lint",
+        "commits",
+        "releases",
+        "dependabot",
+        "ci",
+        "site",
+        "repo-policy"
+      ]
+    },
+    "runs-on": {
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      ]
+    },
+    "modules": {
+      "dev-shell": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The site flake's dev shell (flake.nix, written by wordpress-init). Required: enable = false is exit 2.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false },
+          "wordpress-nix-url": {
+            "type": "string",
+            "default": "",
+            "description": "\"\" means wordpress-nix's main branch; any flake URL otherwise.",
+            "x-app-only": true
+          }
+        }
+      },
+      "editorconfig": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": ".editorconfig: Bedrock's own (4 spaces for PHP, 2 for the rest).",
+        "properties": {
+          "enable": { "type": "boolean", "default": false }
+        }
+      },
+      "lint": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": ".pre-commit-config.yaml: whitespace, JSON/YAML syntax, no private keys or dumps, committed's message check. prek runs it.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false }
+        }
+      },
+      "commits": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "committed.toml: conventional commits.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false },
+          "allowed-types": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1,
+            "uniqueItems": true,
+            "default": ["build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test"]
+          }
+        }
+      },
+      "releases": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A site is deployed, never released: no profile turns this on.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false }
+        }
+      },
+      "dependabot": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": ".github/dependabot.yml: Composer daily in four groups (moonshot v3 §5.4), github-actions weekly.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false },
+          "timezone": {
+            "type": "string",
+            "minLength": 1,
+            "default": "America/New_York",
+            "description": "Composer's daily run is at a time hashed from the slug, in this zone."
+          },
+          "open-pull-requests-limit": { "type": "integer", "minimum": 1, "default": 10 }
+        }
+      },
+      "ci": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The callers of wordpress-nix's site-ci.yml, site-deps.yml and site-audit.yml.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false },
+          "runs-on": {
+            "$ref": "#/$defs/runs-on",
+            "default": ["self-hosted", "nixos"],
+            "description": "The sandboxed checks and the networked audits (a fork's pull request runs on ubuntu-latest)."
+          },
+          "smoke-runs-on": {
+            "$ref": "#/$defs/runs-on",
+            "default": ["self-hosted", "linux", "x64", "kvm"],
+            "description": "The NixOS VM smoke test: a runner with KVM."
+          },
+          "nix-cache-variable": {
+            "type": "string",
+            "pattern": "^[A-Z_][A-Z0-9_]*$",
+            "default": "WORDPRESS_NIX_CACHE",
+            "description": "The Actions variable holding the binary cache: cachix:<name> or attic:<endpoint>/<cache>."
+          }
+        }
+      },
+      "site": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": ".github/wordpress-nix.json: the site's facts, which the workflows and the data commands read.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false },
+          "woocommerce": {
+            "type": "boolean",
+            "description": "Default: whether composer.lock locks wp-plugin/woocommerce. WooCommerce minors are then reviewed.",
+            "x-app-only": true
+          },
+          "home-url": {
+            "type": "string",
+            "default": "",
+            "description": "The production WP_HOME (https://<domain>).",
+            "x-app-only": true
+          },
+          "drop-plugins": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "default": [],
+            "description": "Plugin basenames the conversion dropped, which site import deactivates.",
+            "x-app-only": true
+          },
+          "local-upload-prefixes": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "default": ["cwicly", "fonts", "wpcodebox", "fluentform"],
+            "description": "Upload prefixes that stay on the site's volume (never offloaded or rewritten to the media bucket)."
+          }
+        }
+      },
+      "repo-policy": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The main ruleset (ci / flake, ci / smoke and ci / audit required) and the repository settings.",
+        "properties": {
+          "enable": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    "org-extra": { "properties": {} },
+    "profile-extra": { "properties": {} },
+    "app-extra": { "properties": {} }
+  }
+}

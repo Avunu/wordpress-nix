@@ -138,3 +138,20 @@ def test_cli_reads_the_base_lock_from_the_base_rev(tmp_path, capsys):
     assert rc == 1
     assert "1 introduced, 1 pre-existing" in capsys.readouterr().out
     assert audit.run(p.parse_args(["--root", str(tmp_path), "--base-rev", "nope", "--feed", str(feed)])) == 2
+
+
+def test_markdown_report(tmp_path):
+    (tmp_path / "composer.lock").write_text(lock(("wp-plugin/akismet", "5.3")))
+    feed = tmp_path / "feed.json"
+    feed.write_text(json.dumps(FEED))
+    out = tmp_path / "audit.md"
+    p = argparse.ArgumentParser()
+    audit.add_arguments(p)
+    args = ["--root", str(tmp_path), "--feed", str(feed), "--markdown", str(out)]
+    assert audit.run(p.parse_args(args)) == 1
+    text = out.read_text()
+    assert text.startswith("1 introduced, 0 pre-existing.")
+    assert "| **new** | plugin `akismet` | 5.3 |" in text and "5.3.1" in text
+    (tmp_path / "composer.lock").write_text(lock(("wp-plugin/akismet", "5.3.1")))
+    assert audit.run(p.parse_args(args)) == 0
+    assert out.read_text() == "No known vulnerability in what the site installs.\n"

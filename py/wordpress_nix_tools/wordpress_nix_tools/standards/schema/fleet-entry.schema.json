@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fleet-entry.schema.json",
+  "title": "One site repository in wordpress-nix's fleet",
+  "type": "object",
+  "required": ["repo"],
+  "additionalProperties": false,
+  "properties": {
+    "repo": { "$ref": "core.schema.json#/$defs/fleet-entry-core/properties/repo" },
+    "private": { "$ref": "core.schema.json#/$defs/fleet-entry-core/properties/private" },
+    "documentation": { "$ref": "core.schema.json#/$defs/fleet-entry-core/properties/documentation" },
+    "profile": { "$ref": "core.schema.json#/$defs/fleet-entry-core/properties/profile" },
+    "integration_branch": { "$ref": "core.schema.json#/$defs/fleet-entry-core/properties/integration_branch" },
+    "branches": { "$ref": "core.schema.json#/$defs/fleet-entry-core/properties/branches" }
+  }
+}

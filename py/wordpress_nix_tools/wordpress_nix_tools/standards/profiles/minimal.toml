@@ -1,0 +1,26 @@
+# wordpress-nix's built-in profile `minimal`: the dev shell only. Frozen: it never turns
+# a module on.
+
+schema = 1
+name = "minimal"
+description = "The site's dev shell only: no managed files."
+
+[dev-shell]
+enable = true
+
+[editorconfig]
+enable = false
+[lint]
+enable = false
+[commits]
+enable = false
+[releases]
+enable = false
+[dependabot]
+enable = false
+[ci]
+enable = false
+[site]
+enable = false
+[repo-policy]
+enable = false

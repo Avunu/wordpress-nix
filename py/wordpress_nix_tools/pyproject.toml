@@ -4,7 +4,8 @@
 # no-Nix CI jobs, which install it with
 #   uv tool install "wordpress-nix-tools @ git+https://github.com/Avunu/wordpress@<rev>#subdirectory=py/wordpress_nix_tools"
 # Stdlib plus standards-core: the conversion talks to SSH, rclone, git, composer and
-# nix as subprocesses, and to the Cloudflare and wordpress.org APIs with urllib.
+# nix as subprocesses, and to the Cloudflare and wordpress.org APIs with urllib. The
+# site standards (managed files, profiles) live under wordpress_nix_tools/standards/.
 [build-system]
 requires = ["flit_core >=3.4,<4"]
 build-backend = "flit_core.buildapi"

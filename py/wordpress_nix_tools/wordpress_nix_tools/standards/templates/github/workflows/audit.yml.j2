@@ -1,0 +1,36 @@
+{% import "github/workflows/_uses.j2" as w with context %}
+{% set app = cfg.ci["github-app"] %}
+{% set daily = cfg.ci.schedules.get("audit-daily", "17 9 * * *") %}
+{% set weekly = cfg.ci.schedules.get("audit-weekly", "41 9 * * 1") %}
+# The site's scheduled audits (wordpress-nix docs: production/site-ci.md): daily, the
+# Wordfence feed against what the site installs (a `security` issue) and the build
+# against the cluster's pinned wordpress-nix and nixpkgs (cluster-compat); weekly, the
+# vendor tree rebuilt from scratch (`nix build --rebuild .#vendor`), whose drift under an
+# unchanged lock is a security event, never a relock.
+name: audit
+on:
+  schedule:
+    - cron: {{ daily | json_string }}
+    - cron: {{ weekly | json_string }}
+  workflow_dispatch:
+permissions: {}
+jobs:
+  audit:
+    permissions:
+      contents: read
+      issues: write
+    uses: {{ w.uses("site-audit.yml") }}
+    with:
+      runs-on: {{ cfg.ci["runs-on"] | yaml_json }}
+      daily-cron: {{ daily | json_string }}
+      weekly-cron: {{ weekly | json_string }}
+      nix-cache: {{ "${{ vars." ~ cfg.ci["nix-cache-variable"] ~ " }}" }}
+    secrets:
+      NIX_CACHE_READ_TOKEN: {% raw %}${{ secrets.WORDPRESS_NIX_CACHE_READ_TOKEN }}{% endraw %}
+
+      WORDFENCE_API_KEY: {% raw %}${{ secrets.WORDFENCE_API_KEY }}{% endraw %}
+
+{% if app %}
+      APP_ID: {{ "${{ secrets." ~ app["app-id"] ~ " }}" }}
+      APP_PRIVATE_KEY: {{ "${{ secrets." ~ app["private-key"] ~ " }}" }}
+{% endif %}

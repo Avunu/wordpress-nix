@@ -1,0 +1,30 @@
+{
+  "$comment": "A site repository's own hygiene files: .editorconfig, .pre-commit-config.yaml and committed.toml.",
+  "entries": [
+    {
+      "path": ".editorconfig",
+      "template": "editorconfig.j2",
+      "strategy": "whole",
+      "module": "editorconfig",
+      "header": "ini",
+      "local_regions": ["editorconfig"]
+    },
+    {
+      "path": ".pre-commit-config.yaml",
+      "template": "pre-commit-config.yaml.j2",
+      "strategy": "whole",
+      "module": "lint",
+      "header": "yaml",
+      "local_regions": ["hooks"]
+    },
+    {
+      "path": "committed.toml",
+      "template": "committed.toml.j2",
+      "strategy": "whole",
+      "module": "commits",
+      "uses": ["commits.allowed-types", "commits.subject-length"],
+      "header": "toml",
+      "local_regions": ["committed"]
+    }
+  ]
+}
