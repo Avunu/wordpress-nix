@@ -2,7 +2,8 @@
 (§8.3), into a local directory the scaffolder then converts.
 
 - One session: an SSH ControlMaster is opened first, and rsync, the dump and the
-  survey all ride on it; both timestamps go into provenance.json.
+  survey all ride on it (they wait for its socket and never open their own
+  connection: ``ControlMaster=no``); both timestamps go into provenance.json.
 - Code: rsync of the install, without uploads, caches, wflogs, drop-ins, logs and
   backups (uploads move with ``media offload``).
 - Dump: ``mysqldump --single-transaction --triggers --routines --events --hex-blob``,
@@ -23,6 +24,8 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -91,7 +94,36 @@ def control_path(tmp: str, host: str) -> str:
 
 
 def ssh_args(cp: str) -> tuple[str, ...]:
-    return ("ssh", "-o", "BatchMode=yes", "-o", f"ControlPath={cp}")
+    return ("ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=no", "-o", f"ControlPath={cp}")
+
+
+def master_check(cp: str, host: str) -> bool:
+    argv = ["ssh", "-o", f"ControlPath={cp}", "-O", "check", host]
+    return subprocess.run(argv, capture_output=True, check=False).returncode == 0
+
+
+def wait_for_master(
+    master,
+    cp: str,
+    host: str,
+    *,
+    check: Callable[[str, str], bool] = master_check,
+    timeout: float = 60,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Until the ControlMaster's socket answers: a client started before it would
+    open a connection of its own (a second authentication)."""
+    waited = 0.0
+    while True:
+        rc = master.poll()
+        if rc is not None:
+            raise RemoteError(host, "ssh (the ControlMaster)", rc, "the master connection exited")
+        if check(cp, host):
+            return
+        if waited >= timeout:
+            raise RemoteError(host, "ssh (the ControlMaster)", 255, f"no control socket after {timeout:.0f}s")
+        sleep(0.25)
+        waited += 0.25
 
 
 def rsync_argv(host: str, path: str, into: Path, cp: str) -> list[str]:
@@ -153,6 +185,7 @@ def cmd(args, runner=None) -> int:
             master = subprocess.Popen(
                 ["ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=yes", "-o", f"ControlPath={cp}", "-N", args.host]
             )
+            wait_for_master(master, cp, args.host)
         if not args.db_only:
             prov["codePulledAt"] = now()
             argv = rsync_argv(args.host, args.path, into, cp)
@@ -184,7 +217,7 @@ def cmd(args, runner=None) -> int:
         print(f"legacy pull: {e}", file=sys.stderr)
         return 3
     finally:
-        if master is not None:
+        if master is not None and master.poll() is None:
             master.terminate()
             master.wait()
     print(json.dumps(prov, indent=2))

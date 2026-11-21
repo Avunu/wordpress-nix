@@ -3,9 +3,10 @@
 import json
 from types import SimpleNamespace
 
+import pytest
 from fakes import Recorder
 from wordpress_nix_tools import repo_adopt
-from wordpress_nix_tools.legacy import model, survey
+from wordpress_nix_tools.legacy import model, pull, survey
 from wordpress_nix_tools.site import importer, verify
 from wordpress_nix_tools.site.node import Container, find_node
 
@@ -250,3 +251,24 @@ def test_survey_runs_php_on_stdin():
     assert s["plugins"][0]["drop"]
     php_call = next(stdin for line, stdin in r.calls if "php -- " in line)
     assert b"SELECT" in php_call and b"INSERT" not in php_call.upper().replace(b"INSERTED", b"")
+
+
+class Master:
+    def __init__(self, exits_after=None):
+        self.polls, self.exits_after = 0, exits_after
+
+    def poll(self):
+        self.polls += 1
+        return 255 if self.exits_after is not None and self.polls > self.exits_after else None
+
+
+def test_pull_waits_for_the_control_master():
+    answers = iter([False, False, True])
+    pull.wait_for_master(Master(), "/tmp/cm", "legacy", check=lambda cp, h: next(answers), sleep=lambda s: None)
+    with pytest.raises(pull.RemoteError, match="master connection exited"):
+        pull.wait_for_master(
+            Master(exits_after=2), "/tmp/cm", "legacy", check=lambda cp, h: False, sleep=lambda s: None
+        )
+    with pytest.raises(pull.RemoteError, match="no control socket"):
+        pull.wait_for_master(Master(), "/tmp/cm", "legacy", check=lambda cp, h: False, timeout=1, sleep=lambda s: None)
+    assert "ControlMaster=no" in pull.ssh_args("/tmp/cm")
