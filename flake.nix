@@ -28,6 +28,15 @@
       url = "github:presslabs/gitium/1.2.6";
       flake = false;
     };
+
+    # Shared building blocks with frappe-nix and odoo-nix: lib.checks.mk names
+    # and builds the checks. Its own inputs are nixpkgs and flake-parts, both
+    # followed, so it adds one node to the lock.
+    python-devops-nix = {
+      url = "github:Avunu/python-devops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
+    };
   };
 
   # Nix honours this for a trusted user who accepts it (a prompt the first time, or
@@ -53,11 +62,15 @@
       flake-parts,
       wordpress-sqlite-anywhere,
       gitium,
+      python-devops-nix,
       ...
     }:
     {
-      # The site dev shell + image, as a flake-parts module. See templates/site.
-      flakeModules.default = ./modules/flake-module.nix;
+      # A site flake's outputs, as a flake-parts module: the v3 Bedrock build
+      # (wordpress-nix.site, modules/site.nix) and the
+      # dev shell + image (templates/site). Applied to this flake, so the
+      # module reaches wordpress-nix's own lib and packages.
+      flakeModules.default = nixpkgs.lib.modules.importApply ./modules/flake-module.nix self;
 
       # Deploy WordPress directly on NixOS. See readme.md for usage.
       # The flake wiring injects the SQLite plugin flake + Rust toolchain pin,
@@ -90,6 +103,12 @@
         mkPhp = import ./lib/php.nix; # { pkgs, php ? pkgs.php83, optimize ? true, ... }
         mkFrankenphp = import ./lib/frankenphp.nix; # { pkgs, php }
         mkWordPressSite = import ./lib/site.nix; # { pkgs, src, php ? ..., plugins ? {}, themes ? {} }
+
+        # A stock Bedrock site: php.mkComposerVendor (the FOD, hash in
+        # nix/vendor-hash) into php.buildComposerProject2. The package is the
+        # read-only tree production serves from ${package}/web.
+        #   mkBedrockSite { inherit pkgs; name = "mysite"; src = ./.; php = pkgs.php84; }
+        mkBedrockSite = import ./lib/mk-bedrock-site.nix;
 
         # The immutable document root a read-only public plane serves: the
         # pinned core, the site's wp-content and the platform mu-plugins,
@@ -134,7 +153,10 @@
         # The Turso snapshot publisher, from the pinned plugin flake.
         #   mkTursoPublisher { inherit pkgs; }
         mkTursoPublisher =
-          { pkgs, rustPkgs ? pkgs }:
+          {
+            pkgs,
+            rustPkgs ? pkgs,
+          }:
           wordpress-sqlite-anywhere.lib.mkTursoPublisher { inherit pkgs rustPkgs; };
       };
 
@@ -236,51 +258,85 @@
       // {
         # NOTE: one `checks` attrset — `//` is shallow, so a second
         # `// { checks.x = ...; }` would drop the earlier checks entirely.
-        checks = {
-          # Converter round-trip: data + MySQL type metadata fidelity.
-          mysql-to-sqlite = import ./tools/test/mysql-to-sqlite-test.nix {
-            inherit pkgs;
-            converter = self.packages.${system}.mysql-to-sqlite;
+        checks =
+          let
+            # The v3 checks are registered through python-devops-nix's helper,
+            # which names each wordpress-nix-<x>-check.
+            mk = python-devops-nix.lib.checks.mk {
+              inherit pkgs;
+              product = "wordpress-nix";
+            };
+            # Stock Bedrock over a local Composer artifact repository: the
+            # offline fixture both Bedrock suites build.
+            fixtureSite = self.lib.mkBedrockSite {
+              inherit pkgs;
+              name = "bedrock-fixture";
+              src = ./tests/fixtures/bedrock-site;
+              php = pkgs.php84;
+              composerRepositoryPaths = [ "artifacts" ];
+              productionOnlyPlugins = [ "fixture-plugin" ];
+              activeTheme = "fixture-theme";
+            };
+            bedrockBuild = import ./tests/bedrock-build.nix {
+              inherit pkgs;
+              checks = mk;
+              site = fixtureSite;
+            };
+          in
+          bedrockBuild
+          // {
+            # Tampered and extra PHP files fail, against a local stand-in for
+            # wordpress.org serving the fixture's checksums.
+            verify-wp-checksums = import ./tests/verify-wp-checksums.nix {
+              inherit pkgs;
+              checks = mk;
+              site = fixtureSite;
+              verifier = self.packages.${system}.verify-wp-checksums;
+            };
+            # Converter round-trip: data + MySQL type metadata fidelity.
+            mysql-to-sqlite = import ./tools/test/mysql-to-sqlite-test.nix {
+              inherit pkgs;
+              converter = self.packages.${system}.mysql-to-sqlite;
+            };
+            # Key restoration on a plugin-mangled dump, then conversion.
+            restore-core-keys = import ./tools/test/restore-core-keys-test.nix {
+              inherit pkgs;
+              restoreCoreKeys = self.packages.${system}.restore-core-keys;
+              converter = self.packages.${system}.mysql-to-sqlite;
+            };
+            # An untrusted dump is refused, reported, and stripped clean.
+            audit-mysql-dump = import ./tools/test/audit-mysql-dump-test.nix {
+              inherit pkgs;
+              auditor = self.packages.${system}.audit-mysql-dump;
+            };
+            # Loader round-trip against a local tursodb sync server.
+            sqlite-to-turso = import ./tools/test/sqlite-to-turso-test.nix {
+              inherit pkgs;
+              converter = self.packages.${system}.mysql-to-sqlite;
+              loader = self.packages.${system}.sqlite-to-turso;
+            };
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            # The bootstrapper: fresh, adopted, re-run and guarded directories.
+            wordpress-init = import ./tests/init.nix { inherit pkgs; };
+            # The journald/access-log contract, evaluated and adapted (no VM).
+            logging = import ./tests/logging.nix {
+              inherit pkgs;
+              inherit (nixpkgs.lib) nixosSystem;
+              wordpressModule = self.nixosModules.default;
+            };
+            # The split-plane posture: Caddy matchers and wp-config constants.
+            plane = import ./tests/plane.nix {
+              inherit pkgs;
+              inherit (nixpkgs.lib) nixosSystem;
+              wordpressModule = self.nixosModules.default;
+            };
+            # `nix build .#checks.<system>.module` runs the NixOS VM test (needs KVM).
+            module = import ./tests/module.nix {
+              inherit pkgs;
+              wordpressModule = self.nixosModules.default;
+            };
           };
-          # Key restoration on a plugin-mangled dump, then conversion.
-          restore-core-keys = import ./tools/test/restore-core-keys-test.nix {
-            inherit pkgs;
-            restoreCoreKeys = self.packages.${system}.restore-core-keys;
-            converter = self.packages.${system}.mysql-to-sqlite;
-          };
-          # An untrusted dump is refused, reported, and stripped clean.
-          audit-mysql-dump = import ./tools/test/audit-mysql-dump-test.nix {
-            inherit pkgs;
-            auditor = self.packages.${system}.audit-mysql-dump;
-          };
-          # Loader round-trip against a local tursodb sync server.
-          sqlite-to-turso = import ./tools/test/sqlite-to-turso-test.nix {
-            inherit pkgs;
-            converter = self.packages.${system}.mysql-to-sqlite;
-            loader = self.packages.${system}.sqlite-to-turso;
-          };
-        }
-        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          # The bootstrapper: fresh, adopted, re-run and guarded directories.
-          wordpress-init = import ./tests/init.nix { inherit pkgs; };
-          # The journald/access-log contract, evaluated and adapted (no VM).
-          logging = import ./tests/logging.nix {
-            inherit pkgs;
-            inherit (nixpkgs.lib) nixosSystem;
-            wordpressModule = self.nixosModules.default;
-          };
-          # The split-plane posture: Caddy matchers and wp-config constants.
-          plane = import ./tests/plane.nix {
-            inherit pkgs;
-            inherit (nixpkgs.lib) nixosSystem;
-            wordpressModule = self.nixosModules.default;
-          };
-          # `nix build .#checks.<system>.module` runs the NixOS VM test (needs KVM).
-          module = import ./tests/module.nix {
-            inherit pkgs;
-            wordpressModule = self.nixosModules.default;
-          };
-        };
       }
     );
 }

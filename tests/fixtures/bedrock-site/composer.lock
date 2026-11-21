@@ -1,0 +1,361 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "5a2f2723b135c3f5fe2f943d7dd64b9e",
+    "packages": [
+        {
+            "name": "composer/installers",
+            "version": "2.3.0",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/composer--installers-2.3.0.zip",
+                "shasum": "eed56bebe9540eac25f7d9d68672913859e9dbd3"
+            },
+            "require": {
+                "composer-plugin-api": "^1.0 || ^2.0",
+                "php": "^7.2 || ^8.0"
+            },
+            "require-dev": {
+                "composer/composer": "^1.10.27 || ^2.7",
+                "composer/semver": "^1.7.2 || ^3.4.0",
+                "phpstan/phpstan": "^1.11",
+                "phpstan/phpstan-phpunit": "^1",
+                "symfony/phpunit-bridge": "^7.1.1",
+                "symfony/process": "^5 || ^6 || ^7"
+            },
+            "type": "composer-plugin",
+            "extra": {
+                "class": "Composer\\Installers\\Plugin",
+                "branch-alias": {
+                    "dev-main": "2.x-dev"
+                },
+                "plugin-modifies-install-path": true
+            },
+            "autoload": {
+                "psr-4": {
+                    "Composer\\Installers\\": "src/Composer/Installers"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Composer\\Installers\\Test\\": "tests/Composer/Installers/Test"
+                }
+            },
+            "scripts": {
+                "test": [
+                    "@php vendor/bin/simple-phpunit"
+                ],
+                "phpstan": [
+                    "@php vendor/bin/phpstan analyse"
+                ]
+            },
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Kyle Robinson Young",
+                    "email": "kyle@dontkry.com",
+                    "homepage": "https://github.com/shama"
+                }
+            ],
+            "description": "A multi-framework Composer library installer",
+            "homepage": "https://composer.github.io/installers/",
+            "keywords": [
+                "AGL",
+                "AnnotateCms",
+                "Attogram",
+                "Bitrix",
+                "CakePHP",
+                "Chef",
+                "Cockpit",
+                "CodeIgniter",
+                "ConcreteCMS",
+                "Croogo",
+                "DokuWiki",
+                "Dolibarr",
+                "Drupal",
+                "Elgg",
+                "Eliasis",
+                "ExpressionEngine",
+                "FuelPHP",
+                "Grav",
+                "Hurad",
+                "ImageCMS",
+                "Kanboard",
+                "Known",
+                "Kohana",
+                "Lan Management System",
+                "Laravel",
+                "Lavalite",
+                "Lithium",
+                "MODULEWork",
+                "MODX",
+                "MODX Evo",
+                "Magento",
+                "Mako",
+                "MantisBT",
+                "Matomo",
+                "Mautic",
+                "Maya",
+                "MediaWiki",
+                "Miaoxing",
+                "Moodle",
+                "OXID",
+                "PPI",
+                "Pantheon",
+                "Piwik",
+                "Plentymarkets",
+                "Porto",
+                "ProcessWire",
+                "Puppet",
+                "RadPHP",
+                "ReIndex",
+                "Roundcube",
+                "SMF",
+                "SilverStripe",
+                "Starbug",
+                "SyDES",
+                "Sylius",
+                "TastyIgniter",
+                "Thelia",
+                "WHMCS",
+                "WolfCMS",
+                "WordPress",
+                "YAWIK",
+                "Zend",
+                "Zikula",
+                "concrete5",
+                "eZ Platform",
+                "iTop",
+                "installer",
+                "majima",
+                "osclass",
+                "phpBB",
+                "pxcms",
+                "shopware"
+            ]
+        },
+        {
+            "name": "fixture/greeting",
+            "version": "1.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/fixture--greeting-1.0.0.zip",
+                "shasum": "d4f7956ad8d856484999b600552be8db2f97c45c"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Fixture\\Greeting\\": "src/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "description": "Fixture PHP library: proves the autoloader the install hook writes resolves a PSR-4 class."
+        },
+        {
+            "name": "roots/bedrock-disallow-indexing",
+            "version": "2.1.0",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/roots--bedrock-disallow-indexing-2.1.0.zip",
+                "shasum": "f0e81752b0d6be9a315a0e68e63984c4f6944c76"
+            },
+            "require": {
+                "php": ">=8.2"
+            },
+            "require-dev": {
+                "laravel/pint": "^1.27"
+            },
+            "type": "wordpress-muplugin",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Ben Word",
+                    "email": "ben@benword.com",
+                    "homepage": "https://github.com/retlehs"
+                },
+                {
+                    "name": "Scott Walkinshaw",
+                    "email": "scott.walkinshaw@gmail.com",
+                    "homepage": "https://github.com/swalkinshaw"
+                },
+                {
+                    "name": "QWp6t",
+                    "email": "hi@qwp6t.me",
+                    "homepage": "https://github.com/qwp6t"
+                }
+            ],
+            "description": "Disallow indexing of your site on non-production environments",
+            "keywords": [
+                "wordpress"
+            ],
+            "support": {
+                "issues": "https://github.com/roots/bedrock-disallow-indexing/issues",
+                "forum": "https://discourse.roots.io/"
+            }
+        },
+        {
+            "name": "roots/wordpress",
+            "version": "7.1.5",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/roots--wordpress-7.1.5.zip",
+                "shasum": "c8ca836794aadd3fff9d228c398e16f58be1cec5"
+            },
+            "require": {
+                "roots/wordpress-core-installer": "^4.0",
+                "roots/wordpress-no-content": "self.version"
+            },
+            "type": "metapackage",
+            "license": [
+                "MIT",
+                "GPL-2.0-or-later"
+            ],
+            "description": "WordPress is open source software you can use to create a beautiful website, blog, or app.",
+            "homepage": "https://wordpress.org/",
+            "keywords": [
+                "blog",
+                "cms",
+                "wordpress"
+            ]
+        },
+        {
+            "name": "roots/wordpress-core-installer",
+            "version": "4.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/roots--wordpress-core-installer-4.0.0.zip",
+                "shasum": "1cdbf59104eff18a00f1976a234c000c2a382ec2"
+            },
+            "require": {
+                "composer-plugin-api": "^2.0",
+                "php": ">=7.2.24"
+            },
+            "conflict": {
+                "composer/installers": "<1.0.6"
+            },
+            "replace": {
+                "johnpbloch/wordpress-core-installer": "*"
+            },
+            "require-dev": {
+                "composer/composer": "^2.0",
+                "phpunit/phpunit": "^8.5"
+            },
+            "type": "composer-plugin",
+            "extra": {
+                "class": "Roots\\Composer\\WordPressCorePlugin"
+            },
+            "autoload": {
+                "psr-4": {
+                    "Roots\\Composer\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Tests\\Roots\\Composer\\": "tests/"
+                }
+            },
+            "scripts": {
+                "test:phpunit": [
+                    "phpunit"
+                ],
+                "test": [
+                    "@test:phpunit"
+                ]
+            },
+            "license": [
+                "GPL-2.0-or-later"
+            ],
+            "authors": [
+                {
+                    "name": "John P. Bloch",
+                    "email": "me@johnpbloch.com"
+                },
+                {
+                    "name": "Roots",
+                    "email": "team@roots.io"
+                }
+            ],
+            "description": "A Composer custom installer to handle installing WordPress as a dependency",
+            "keywords": [
+                "wordpress"
+            ]
+        },
+        {
+            "name": "roots/wordpress-no-content",
+            "version": "7.1.5",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/roots--wordpress-no-content-7.1.5.zip",
+                "shasum": "c38baf0a690ce7489f684db830dd7b41b6250364"
+            },
+            "require": {
+                "php": ">= 7.4"
+            },
+            "provide": {
+                "wordpress/core-implementation": "7.1.5"
+            },
+            "type": "wordpress-core",
+            "license": [
+                "GPL-2.0-or-later"
+            ],
+            "description": "Fixture stand-in for WordPress core: the files the build asserts on, nothing more."
+        },
+        {
+            "name": "wp-plugin/fixture-plugin",
+            "version": "1.2.0",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/wp-plugin--fixture-plugin-1.2.0.zip",
+                "shasum": "bc1b95806834aa81fc815012094de1ccbcbce067"
+            },
+            "require": {
+                "composer/installers": "^1.0 || ^2.0"
+            },
+            "type": "wordpress-plugin",
+            "license": [
+                "GPL-2.0-or-later"
+            ],
+            "description": "Fixture stand-in for a wordpress.org plugin from WP Packages."
+        },
+        {
+            "name": "wp-theme/fixture-theme",
+            "version": "1.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "artifacts/wp-theme--fixture-theme-1.0.0.zip",
+                "shasum": "4bbca1880c6cc7413105544272450c4dace5d122"
+            },
+            "require": {
+                "composer/installers": "^1.0 || ^2.0"
+            },
+            "type": "wordpress-theme",
+            "license": [
+                "GPL-2.0-or-later"
+            ],
+            "description": "Fixture stand-in for a wordpress.org theme from WP Packages."
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "dev",
+    "stability-flags": {},
+    "prefer-stable": true,
+    "prefer-lowest": false,
+    "platform": {
+        "php": ">=8.3"
+    },
+    "platform-dev": {},
+    "platform-overrides": {
+        "php": "8.4"
+    },
+    "plugin-api-version": "2.11.0"
+}

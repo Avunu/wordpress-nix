@@ -1,0 +1,10 @@
+{
+  "name": "wp-plugin/fixture-plugin",
+  "description": "Fixture stand-in for a wordpress.org plugin from WP Packages.",
+  "version": "1.2.0",
+  "type": "wordpress-plugin",
+  "license": "GPL-2.0-or-later",
+  "require": {
+    "composer/installers": "^1.0 || ^2.0"
+  }
+}

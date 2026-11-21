@@ -1,0 +1,10 @@
+{
+  "name": "wp-theme/fixture-theme",
+  "description": "Fixture stand-in for a wordpress.org theme from WP Packages.",
+  "version": "1.0.0",
+  "type": "wordpress-theme",
+  "license": "GPL-2.0-or-later",
+  "require": {
+    "composer/installers": "^1.0 || ^2.0"
+  }
+}

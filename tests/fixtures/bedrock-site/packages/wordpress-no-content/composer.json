@@ -1,0 +1,13 @@
+{
+  "name": "roots/wordpress-no-content",
+  "description": "Fixture stand-in for WordPress core: the files the build asserts on, nothing more.",
+  "version": "7.1.5",
+  "type": "wordpress-core",
+  "license": "GPL-2.0-or-later",
+  "require": {
+    "php": ">= 7.4"
+  },
+  "provide": {
+    "wordpress/core-implementation": "7.1.5"
+  }
+}

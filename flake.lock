@@ -379,6 +379,29 @@
         "type": "github"
       }
     },
+    "python-devops-nix": {
+      "inputs": {
+        "flake-parts": [
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1795219461,
+        "narHash": "sha256-SBHbo7The0NQmK4xqUy9Rfp765kavW0Bm90GTA2boVY=",
+        "owner": "Avunu",
+        "repo": "python-devops-nix",
+        "rev": "cb0774e012eb9ea61400e8f5041a0c502547d921",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Avunu",
+        "repo": "python-devops-nix",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "devenv": "devenv",
@@ -386,6 +409,7 @@
         "flake-utils": "flake-utils",
         "gitium": "gitium",
         "nixpkgs": "nixpkgs_2",
+        "python-devops-nix": "python-devops-nix",
         "wordpress-sqlite-anywhere": "wordpress-sqlite-anywhere"
       }
     },
