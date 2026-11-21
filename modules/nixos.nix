@@ -29,8 +29,9 @@
 #
 # Units: wordpress-init, mysql (database.createLocally), wordpress-migrate
 # (python-devops-nix's migrate flow: `wp core update-db` behind a verified
-# snapshot, after an is-installed check), frankenphp, and the wordpress-cron
-# timer. Each defines its own PrivateTmp, and all but mysql run under
+# snapshot, after an is-installed check), frankenphp, the wordpress-cron
+# timer, and wordpress-env.path (a secret rewritten in place restarts
+# wordpress-init, and through Requires= frankenphp and migrate). Each defines its own PrivateTmp, and all but mysql run under
 # python-devops-nix's sandboxing baseline (lib.nixos.hardening) with the `jit`
 # profile: opcache's JIT and PCRE's both map W+X memory.
 #
@@ -387,9 +388,21 @@ let
       echo "<3>"${say "cannot reach the database"} >&2
       exit 1
     fi
-    if [ "$TABLES" = "0" ] || ! ${wp} core is-installed 2>/dev/null; then
+    # is-installed answers 1 for "not installed"; anything else (255: a PHP
+    # fatal in newly deployed code, a database error) is a failed migrate, not
+    # a first boot.
+    rc=0
+    if [ "$TABLES" != "0" ]; then
+      ${wp} core is-installed || rc=$?
+    else
+      rc=1
+    fi
+    if [ "$rc" -eq 1 ]; then
       echo "<5>"${say "WordPress is not installed in ${dbName}; nothing to migrate. Import or install the site, then redeploy."} >&2
       exit 100
+    elif [ "$rc" -ne 0 ]; then
+      echo "<3>"${say "wp core is-installed failed"}" (exit $rc); WordPress does not load. Fix the build and redeploy." >&2
+      exit 1
     fi
     exit 0
   '';
@@ -452,8 +465,12 @@ let
 
   cronScript = pkgs.writeShellScript "wordpress-cron" ''
     set -euo pipefail
-    # An empty database (first boot, before `site import`) has nothing due.
-    ${wp} core is-installed 2>/dev/null || exit 0
+    # An empty database (first boot, before `site import`) has nothing due;
+    # any other failure of is-installed (a PHP fatal) fails the run.
+    rc=0
+    ${wp} core is-installed || rc=$?
+    [ "$rc" -eq 1 ] && exit 0
+    [ "$rc" -eq 0 ] || exit "$rc"
     # --due-now runs the events whose time has come (`--all --due-now` is
     # refused by wp-cli as contradictory).
     exec ${wp} cron event run --due-now
@@ -961,7 +978,10 @@ in
         "wordpress-migrate.service"
         "wordpress-cron.service"
       ];
-      # A new setting or secret rewrites the file on the next switch.
+      # A new setting, or a new list of environmentFiles, rewrites the file on
+      # the next switch; a secret rewritten in place (agenix decrypts to the
+      # same path) does through wordpress-env.path. Either way the restart
+      # reaches frankenphp and migrate through their Requires=.
       restartTriggers = [ settingsFile ] ++ cfg.environmentFiles;
       path = [ pkgs.coreutils ];
       serviceConfig = {
@@ -976,6 +996,26 @@ in
       // harden {
         inherit readWritePaths;
         addressFamilies = [ "AF_UNIX" ];
+      };
+    };
+
+    # A secret rotated at the same path changes no unit, so nothing on the
+    # switch restarts wordpress-init; this watches the files instead. A path
+    # unit only starts its unit, and wordpress-init is already active, hence
+    # the restart in between.
+    systemd.paths.wordpress-env = mkIf (cfg.environmentFiles != [ ]) {
+      description = "Watch Bedrock's environmentFiles";
+      wantedBy = [ "multi-user.target" ];
+      pathConfig = {
+        PathChanged = cfg.environmentFiles;
+        Unit = "wordpress-env.service";
+      };
+    };
+    systemd.services.wordpress-env = mkIf (cfg.environmentFiles != [ ]) {
+      description = "Rewrite Bedrock's environment after a secret changed";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.systemd}/bin/systemctl restart wordpress-init.service";
       };
     };
 
@@ -1087,6 +1127,8 @@ in
         }
       ];
       settings.mysqld = {
+        # unix_socket only (DB_HOST is the socket): nothing on the network.
+        skip-networking = mkDefault true;
         character-set-server = mkDefault "utf8mb4";
         collation-server = mkDefault "utf8mb4_unicode_ci";
         innodb_buffer_pool_size = mkDefault profile.innodbBufferPool;
