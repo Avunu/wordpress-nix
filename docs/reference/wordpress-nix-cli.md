@@ -55,7 +55,7 @@ Environment: `WORDPRESS_NIX_CLOUDFLARE_TOKEN` (the multi-account provisioning to
 
 ## audit
 
-`audit [--root .] [--lock F] [--base-lock F] [--feed F] [--format text|json|github]`: composer.lock's `wp-plugin/*`, `wp-theme/*` and core, and committed plugin and theme headers, against Wordfence Intelligence V3. With `--base-lock`, only vulnerabilities the change introduced exit 1.
+`audit [--root .] [--lock F] [--base-rev REV] [--base-lock F] [--feed F] [--format text|json|github]`: composer.lock's `wp-plugin/*`, `wp-theme/*` and core, and committed plugin and theme headers, against Wordfence Intelligence V3. With `--base-rev` (the PR's base commit), only vulnerabilities the change introduced exit 1: the base is that commit's `composer.lock` (or `--base-lock`) and its committed headers, read from git. `--base-lock` alone gives a base with no committed code, so every committed finding fails.
 
 ## The site CI steps (standards-core)
 

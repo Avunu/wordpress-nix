@@ -1,4 +1,6 @@
+import argparse
 import json
+import subprocess
 
 from wordpress_nix_tools import audit
 
@@ -83,3 +85,56 @@ def test_only_new_findings_fail(tmp_path):
     assert [f.id for f in existing] == ["v1"]
     fixed = lock(("wp-plugin/akismet", "5.3.1"))
     assert audit.audit(tmp_path, fixed, FEED, base) == ([], [])
+
+
+def premium(root, version):
+    p = root / "web/app/plugins/premium"
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "premium.php").write_text(f"<?php\n/*\n * Plugin Name: Premium\n * Version: {version}\n */")
+
+
+def git(root, *args):
+    return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def commit(root, msg):
+    git(root, "add", "-A")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", msg)
+    return git(root, "rev-parse", "HEAD")
+
+
+def test_committed_code_is_compared_with_the_base_commit(tmp_path):
+    git(tmp_path, "init", "-q")
+    text = lock(("wp-plugin/akismet", "5.3"))
+    (tmp_path / "composer.lock").write_text(text)
+    premium(tmp_path, "2.1")
+    base = commit(tmp_path, "base")
+    # The PR downgrades the committed plugin into the vulnerable range.
+    premium(tmp_path, "1.9")
+    commit(tmp_path, "head")
+    introduced, existing = audit.audit(tmp_path, text, FEED, text, base)
+    assert [f.id for f in introduced] == ["v3"]
+    assert [f.id for f in existing] == ["v1"]
+    # A lock-only base never counts the head's committed code as pre-existing.
+    introduced, _ = audit.audit(tmp_path, text, FEED, text)
+    assert [f.id for f in introduced] == ["v3"]
+    # Vulnerable at the base too: reported, not failed.
+    vulnerable_base = git(tmp_path, "rev-parse", "HEAD")
+    introduced, existing = audit.audit(tmp_path, text, FEED, text, vulnerable_base)
+    assert introduced == [] and sorted(f.id for f in existing) == ["v1", "v3"]
+    assert audit.from_git(tmp_path, base) == [audit.Software("plugin", "premium", "2.1", "web/app/plugins/premium")]
+
+
+def test_cli_reads_the_base_lock_from_the_base_rev(tmp_path, capsys):
+    git(tmp_path, "init", "-q")
+    (tmp_path / "composer.lock").write_text(lock(("wp-plugin/akismet", "5.3")))
+    base = commit(tmp_path, "base")
+    (tmp_path / "composer.lock").write_text(lock(("wp-plugin/akismet", "5.3"), ("roots/wordpress-no-content", "6.8.0")))
+    feed = tmp_path / "feed.json"
+    feed.write_text(json.dumps(FEED))
+    p = argparse.ArgumentParser()
+    audit.add_arguments(p)
+    rc = audit.run(p.parse_args(["--root", str(tmp_path), "--base-rev", base, "--feed", str(feed)]))
+    assert rc == 1
+    assert "1 introduced, 1 pre-existing" in capsys.readouterr().out
+    assert audit.run(p.parse_args(["--root", str(tmp_path), "--base-rev", "nope", "--feed", str(feed)])) == 2

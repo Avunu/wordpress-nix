@@ -2,9 +2,12 @@
 
 It matches composer.lock (``wp-plugin/*``, ``wp-theme/*``, ``roots/wordpress-no-content``
 as core) and the versions in committed plugin and theme headers against each
-vulnerability's ``affected_versions`` ranges. With ``--base-lock`` (the lock at the
-PR's base), only findings the change *introduced* fail the run (exit 1); findings
-the base already had are reported. Without it every finding fails.
+vulnerability's ``affected_versions`` ranges. With ``--base-rev`` (the PR's base
+commit), only findings the change *introduced* fail the run (exit 1); findings the
+base already had, in its composer.lock or its committed headers (read from git),
+are reported. ``--base-lock`` gives the base lock as a file instead; without
+``--base-rev`` the base has no committed code, so every committed finding fails.
+Without either every finding fails.
 
 The feed is ``--feed FILE`` or, with ``WORDPRESS_NIX_WORDFENCE_KEY``, the production
 feed (``https://www.wordfence.com/api/intelligence/v3/vulnerabilities/production``).
@@ -14,8 +17,10 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,31 +90,74 @@ def from_lock(text: str, where: str = "composer.lock") -> list[Software]:
     return unique
 
 
-def from_tree(root: Path) -> list[Software]:
-    """Committed plugins and themes, by their header's Version."""
+def _committed(
+    dirs: Callable[[str], list[str]], php: Callable[[str], list[str]], read: Callable[[str], str | None]
+) -> list[Software]:
+    """Committed plugins and themes, by their header's Version. ``dirs(sub)`` lists
+    the directories under web/app/<sub>, ``php(dir)`` a directory's top-level .php
+    files, ``read(path)`` a file's text (None when absent)."""
     out = []
-    for kind, sub, header_file in (("plugin", "plugins", None), ("theme", "themes", "style.css")):
-        d = root / "web" / "app" / sub
-        if not d.is_dir():
-            continue
-        for entry in sorted(d.iterdir()):
-            if not entry.is_dir():
-                continue
-            files = (
-                [entry / header_file] if header_file else [entry / f"{entry.name}.php", *sorted(entry.glob("*.php"))]
-            )
+    for kind, sub in (("plugin", "plugins"), ("theme", "themes")):
+        for name in sorted(dirs(f"web/app/{sub}")):
+            where = f"web/app/{sub}/{name}"
+            if kind == "theme":
+                files = [f"{where}/style.css"]
+            else:
+                files = [f"{where}/{name}.php", *(f"{where}/{f}" for f in sorted(php(where)))]
             for f in files:
-                try:
-                    head = f.read_text(errors="replace")[:8192]
-                except OSError:
+                text = read(f)
+                if text is None:
                     continue
+                head = text[:8192]
                 if kind == "plugin" and "Plugin Name" not in head:
                     continue
                 m = HEADER.search(head)
                 if m:
-                    out.append(Software(kind, entry.name, normalize(m.group(1)), f"web/app/{sub}/{entry.name}"))
+                    out.append(Software(kind, name, normalize(m.group(1)), where))
                     break
     return out
+
+
+def from_tree(root: Path) -> list[Software]:
+    """Committed plugins and themes in the working tree."""
+
+    def dirs(sub: str) -> list[str]:
+        d = root / sub
+        return [e.name for e in d.iterdir() if e.is_dir()] if d.is_dir() else []
+
+    def php(sub: str) -> list[str]:
+        return [e.name for e in (root / sub).glob("*.php")]
+
+    def read(path: str) -> str | None:
+        try:
+            return (root / path).read_text(errors="replace")
+        except OSError:
+            return None
+
+    return _committed(dirs, php, read)
+
+
+def from_git(root: Path, rev: str) -> list[Software]:
+    """Committed plugins and themes at ``rev`` (the PR's base), read from git."""
+
+    def git(*args: str) -> str | None:
+        p = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+        return p.stdout if p.returncode == 0 else None
+
+    def entries(sub: str, kind: str) -> list[str]:
+        out = git("ls-tree", f"{rev}:{sub}") or ""
+        names = []
+        for line in out.splitlines():
+            meta, _, name = line.partition("\t")
+            if meta.split()[1:2] == [kind]:
+                names.append(name)
+        return names
+
+    return _committed(
+        lambda sub: entries(sub, "tree"),
+        lambda sub: [n for n in entries(sub, "blob") if n.endswith(".php")],
+        lambda path: git("show", f"{rev}:{path}"),
+    )
 
 
 def match(feed: dict, software: list[Software]) -> list[Finding]:
@@ -151,13 +199,19 @@ def load_feed(path: str | None, fetch=None) -> dict:
         return json.loads(r.read())
 
 
-def audit(root: Path, lock_text: str, feed: dict, base_lock_text: str | None) -> tuple[list[Finding], list[Finding]]:
-    """(introduced, pre-existing)."""
+def audit(
+    root: Path, lock_text: str, feed: dict, base_lock_text: str | None, base_rev: str | None = None
+) -> tuple[list[Finding], list[Finding]]:
+    """(introduced, pre-existing). The base is ``base_lock_text`` plus the committed
+    code at ``base_rev``; the head's own committed code never counts as the base."""
     software = from_lock(lock_text) + from_tree(root)
     findings = match(feed, software)
-    if base_lock_text is None:
+    if base_lock_text is None and base_rev is None:
         return findings, []
-    base = {(f.software.kind, f.software.slug, f.id) for f in match(feed, from_lock(base_lock_text) + from_tree(root))}
+    base_software = from_lock(base_lock_text) if base_lock_text else []
+    if base_rev:
+        base_software += from_git(root, base_rev)
+    base = {(f.software.kind, f.software.slug, f.id) for f in match(feed, base_software)}
     introduced = [f for f in findings if (f.software.kind, f.software.slug, f.id) not in base]
     existing = [f for f in findings if (f.software.kind, f.software.slug, f.id) in base]
     return introduced, existing
@@ -175,11 +229,26 @@ def run(args: argparse.Namespace) -> int:
     try:
         lock_text = lock.read_text()
         base_text = Path(args.base_lock).read_text() if args.base_lock else None
+        if args.base_rev:
+            if subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--verify", "-q", f"{args.base_rev}^{{commit}}"],
+                capture_output=True,
+                check=False,
+            ).returncode:
+                raise ValueError(f"--base-rev {args.base_rev} is not a commit in {root}")
+            if base_text is None:
+                shown = subprocess.run(
+                    ["git", "-C", str(root), "show", f"{args.base_rev}:composer.lock"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                base_text = shown.stdout if shown.returncode == 0 else ""
         feed = load_feed(args.feed)
     except (OSError, ValueError) as e:
         print(f"wordpress-nix audit: {e}", file=sys.stderr)
         return 2
-    introduced, existing = audit(root, lock_text, feed, base_text)
+    introduced, existing = audit(root, lock_text, feed, base_text, args.base_rev)
     if args.format == "json":
         json.dump(
             {
@@ -203,6 +272,11 @@ def run(args: argparse.Namespace) -> int:
 def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--root", default=".", help="the site repository (default: .)")
     p.add_argument("--lock", help="composer.lock (default: ROOT/composer.lock)")
-    p.add_argument("--base-lock", help="the lock at the PR's base: only new findings fail")
+    p.add_argument(
+        "--base-rev", help="the PR's base commit: only findings it did not have fail (its lock and committed code)"
+    )
+    p.add_argument(
+        "--base-lock", help="the lock at the PR's base, as a file (default with --base-rev: REV:composer.lock)"
+    )
     p.add_argument("--feed", help=f"a Wordfence V3 feed file (default: download with {KEY_ENV})")
     p.add_argument("--format", choices=("text", "json", "github"), default="text")
