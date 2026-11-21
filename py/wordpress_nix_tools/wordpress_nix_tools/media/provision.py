@@ -153,27 +153,40 @@ def provision(
         "S3_REGION": "auto",
     }
     fragments: dict = {}
-    for suffix, group, secret in (
-        ("media", RW_GROUP, f"{slug}-cloud-files"),
-        ("media-ro", RO_GROUP, f"{slug}-media-ro"),
-    ):
-        name = f"wordpress-nix-{slug}-{suffix}"
-        existing = find_token(cf, account, name)
-        if existing and not rotate:
-            log(f"key {name} exists ({existing.get('id')}); its secret is not readable: --rotate mints a new one")
-            continue
-        creds = mint(cf, account, bucket, name, group)
-        if suffix == "media":
-            # A new token can take a few seconds to reach R2.
-            problems = probe({**common, **creds}, f"https://{domain}")
-            if problems:
-                revoke(cf, account, creds["tokenId"])
-                raise CloudflareError(f"the new key failed its probe ({'; '.join(problems)}); it was revoked", {})
-        if existing:
-            revoke(cf, account, existing["id"])
-            log(f"revoked the previous {name} ({existing['id']})")
-        fragments[secret] = {**common, "S3_KEY": creds["S3_KEY"], "S3_SECRET": creds["S3_SECRET"]}
-        log(f"minted {name} ({creds['tokenId']}, account-owned)")
+    try:
+        for suffix, group, secret in (
+            ("media", RW_GROUP, f"{slug}-cloud-files"),
+            ("media-ro", RO_GROUP, f"{slug}-media-ro"),
+        ):
+            name = f"wordpress-nix-{slug}-{suffix}"
+            existing = find_token(cf, account, name)
+            if existing and not rotate:
+                log(f"key {name} exists ({existing.get('id')}); its secret is not readable: --rotate mints a new one")
+                continue
+            creds = mint(cf, account, bucket, name, group)
+            if suffix == "media":
+                # A new token can take a few seconds to reach R2.
+                problems = probe({**common, **creds}, f"https://{domain}")
+                if problems:
+                    revoke(cf, account, creds["tokenId"])
+                    raise CloudflareError(f"the new key failed its probe ({'; '.join(problems)}); it was revoked", {})
+            if existing:
+                revoke(cf, account, existing["id"])
+                log(f"revoked the previous {name} ({existing['id']})")
+            fragments[secret] = {**common, "S3_KEY": creds["S3_KEY"], "S3_SECRET": creds["S3_SECRET"]}
+            log(f"minted {name} ({creds['tokenId']}, account-owned)")
+    except CloudflareError as e:
+        # A key minted earlier in this run has a secret nobody else will see: hand it
+        # back with the error, so the caller shows it before failing.
+        if fragments:
+            e.partial = {
+                "bucket": bucket,
+                "account": account,
+                "endpoint": endpoint,
+                "mediaHost": media_host,
+                "secrets": fragments,
+            }
+        raise
     return {"bucket": bucket, "account": account, "endpoint": endpoint, "mediaHost": media_host, "secrets": fragments}
 
 
@@ -241,12 +254,19 @@ def cmd(args, cf: Cloudflare | None = None, probe: Probe | None = None) -> int:
         )
     except CloudflareError as e:
         print(f"media provision: {e}", file=sys.stderr)
+        if e.partial:
+            print(json.dumps(e.partial, indent=2))
+            show_once(e.partial)
         return 1
     print(json.dumps(result, indent=2))
+    show_once(result)
+    return 0
+
+
+def show_once(result: dict) -> None:
     if result["secrets"]:
         print(
             "\nThese secrets are shown once. Provision them now (cluster-ovh-01: `avc secrets provision`)"
             f" as {', '.join(result['secrets'])}.",
             file=sys.stderr,
         )
-    return 0

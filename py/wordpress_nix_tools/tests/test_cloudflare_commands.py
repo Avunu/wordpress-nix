@@ -1,6 +1,8 @@
 """edge provision, media provision and cutover against the in-memory Cloudflare."""
 
 import copy
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -225,3 +227,18 @@ def test_cutover_leaves_mail_and_txt_records_alone(fake, tmp_path):
     assert strip_ids(after) == before
     # Untouched, not deleted and recreated: the same record ids.
     assert [r for r in after if r["id"] in {k["id"] for k in keep}] == keep
+
+
+def test_media_provision_shows_a_minted_key_when_a_later_step_fails(fake, capsys):
+    def flaky(method, path, body=None):
+        if method == "POST" and path.endswith("/tokens") and body and body["name"].endswith("-media-ro"):
+            return {"success": False, "errors": [{"code": 1000, "message": "mint refused"}], "result": None}
+        return fake(method, path, body)
+
+    args = SimpleNamespace(slug="fine", domain="fine.example", adopt="", rotate=False, no_probe=True)
+    assert media.cmd(args, cf=Cloudflare(transport=flaky)) == 1
+    out = capsys.readouterr()
+    shown = json.loads(out.out)
+    assert set(shown["secrets"]) == {"fine-cloud-files"}
+    assert len(shown["secrets"]["fine-cloud-files"]["S3_SECRET"]) == 64
+    assert "mint refused" in out.err and "shown once" in out.err

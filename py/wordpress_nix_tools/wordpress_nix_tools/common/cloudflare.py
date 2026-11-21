@@ -34,6 +34,8 @@ class CloudflareError(Exception):
         super().__init__(f"{context} failed{': ' + detail if detail else ''}")
         self.envelope = envelope
         self.codes = [e.get("code") for e in errors if isinstance(e, dict)]
+        # What an operation had already done when it failed, for the caller to show.
+        self.partial: dict | None = None
 
 
 @dataclass
