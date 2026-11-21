@@ -2,17 +2,21 @@
 
 Composer groups (templates/bedrock-site/.github/dependabot.yml): ``wordpress-core``
 (roots/wordpress*), ``wp-plugins`` (wp-plugin/*, wp-theme/*; minor and patch),
-``avunu`` (avunu/*), ``php-libs`` (the rest; minor and patch). A Composer PR is
-always relocked first (``relock``): relock-push enables auto-merge only after
-verify-relock says ``ok``, and the auto-merge job applies the rows below.
+``avunu`` (avunu/*), ``php-libs`` (the rest; minor and patch).
 
-What the table cannot say in rules, the site's CI says in steps:
-- core patch versus minor: the ``wordpress-core`` group carries no update-type
-  filter, so ``ci.core_update`` (below) splits it: a patch is ``auto``, a minor
-  ``review`` (until previews), a major ``review``;
-- Woo minors on a Woo site (``.github/wordpress-nix.json`` ``woocommerce: true``)
-  are ``review``: ``woo_review`` below;
-- a ``security``-labelled PR bypasses the cooldown in Dependabot's config, not here.
+Every Composer PR is relocked first (``relock``), whatever its update type: a
+major left unrelocked would only fail ``ci / flake`` on its stale vendor hash.
+relock-push then enables auto-merge only when ``ci.verify_relock`` says ``ok``,
+so the composer rows of §6.4 that the update decides live there
+(``lockcheck.update_review``), read from the base and head locks:
+- ``roots/wordpress*`` patch is auto; minor and major are ``needs-review``;
+- any major is ``needs-review``;
+- ``wp-plugin/woocommerce*`` minor on a Woo site (the head's
+  ``.github/wordpress-nix.json`` ``woocommerce: true``) is ``needs-review``;
+- a new package is ``needs-review``; a URL that does not name its package and
+  version is ``reject``.
+A ``security``-labelled PR bypasses the cooldown in Dependabot's config; its
+patch or minor then merges by the rows above.
 """
 
 from standards_core.ci.verdict import DecisionRule
@@ -22,30 +26,9 @@ DECISION_TABLE = (
     DecisionRule("github_actions", "close", names=("Avunu/wordpress*", "$engine"), sticky=True),
     DecisionRule("github_actions", "auto", update="minor-patch"),
     DecisionRule("github_actions", "auto", ungrouped_named=True),
-    # composer: every PR is relocked; the verdict after the relock is the CI's.
+    # composer: every PR is relocked; verify-relock gives the verdict after it.
     DecisionRule("composer", "relock"),
     # nix: a site has no nix ecosystem (wordpress-nix moves by rollout); refuse any.
     DecisionRule("nix", "close", names=("$rollout-inputs",)),
     DecisionRule("nix", "relock"),
 )
-
-# After the relock (relock-push's `decision` ok): the composer rows of §6.4.
-AUTO, REVIEW = "auto", "review"
-
-
-def composer_after_relock(*, group: str, update_type: str, names: list[str], woocommerce: bool, security: bool) -> str:
-    """The §6.4 verdict for a relocked Composer PR whose verify-relock said ok."""
-    major = update_type == "version-update:semver-major"
-    patch = update_type == "version-update:semver-patch"
-    lowered = [n.lower() for n in names]
-    if major:
-        return REVIEW
-    if group == "wordpress-core" or any(n.startswith("roots/wordpress") for n in lowered):
-        return AUTO if patch else REVIEW
-    if woocommerce and any(n.startswith("wp-plugin/woocommerce") for n in lowered) and not patch:
-        return REVIEW
-    if group in ("wp-plugins", "avunu", "php-libs") or any(n.startswith("avunu/") for n in lowered):
-        return AUTO
-    if security and update_type in ("version-update:semver-minor", "version-update:semver-patch"):
-        return AUTO
-    return REVIEW

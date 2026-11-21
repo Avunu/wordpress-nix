@@ -60,5 +60,5 @@ Environment: `WORDPRESS_NIX_CLOUDFLARE_TOKEN` (the multi-account provisioning to
 ## The site CI steps (standards-core)
 
 - `ci apply-relock-patch --patch P`: relock-push's check; the only path a relock may push is `nix/vendor-hash`.
-- `ci verify-relock --base SHA --head SHA`: every changed `composer.lock` entry's dist URL names its package and version (wordpress.org zips for `wp-plugin/*`, `wp-theme/*` and core, the GitHub zipball at the source reference for Packagist), a new package is `needs-review`, and `nix/vendor-hash` is a real hash.
+- `ci verify-relock --base SHA --head SHA`: every changed `composer.lock` entry's dist URL names its package and version (wordpress.org zips for `wp-plugin/*`, `wp-theme/*` and core, the GitHub zipball at the source reference for Packagist), a new package is `needs-review`, and `nix/vendor-hash` is a real hash. The §6.4 rows the version change decides are `needs-review` too, so relock-push leaves auto-merge off: a `roots/wordpress*` minor or major, any major, and a `wp-plugin/woocommerce*` minor when the head's `.github/wordpress-nix.json` has `woocommerce: true`.
 - `ci verdict` / `ci automerge`: the §6.4 decision table (`wordpress_nix_tools/verdict.py`).
