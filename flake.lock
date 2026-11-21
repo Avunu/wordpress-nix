@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "bedrock": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795025018,
+        "narHash": "sha256-KrOKct4dm1yYQjRy/MTWaNghvEFyjKF5l+FTt7pUkp4=",
+        "owner": "roots",
+        "repo": "bedrock",
+        "rev": "c64c80e6c95eedfb5b2ab4c5fd88c82653c70566",
+        "type": "github"
+      },
+      "original": {
+        "owner": "roots",
+        "ref": "1.31.9",
+        "repo": "bedrock",
+        "type": "github"
+      }
+    },
     "composition-c4": {
       "locked": {
         "lastModified": 1684533115,
@@ -404,6 +421,7 @@
     },
     "root": {
       "inputs": {
+        "bedrock": "bedrock",
         "devenv": "devenv",
         "flake-parts": "flake-parts_2",
         "flake-utils": "flake-utils",

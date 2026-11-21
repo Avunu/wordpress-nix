@@ -29,6 +29,15 @@
       flake = false;
     };
 
+    # Stock Roots Bedrock, the layout every v3 site repository is: the
+    # template (templates/bedrock-site) carries its files unedited, and the
+    # `bedrock-template` check holds them to this tag. Dependabot's nix
+    # ecosystem bumps it here, and nowhere else.
+    bedrock = {
+      url = "github:roots/bedrock/1.31.9";
+      flake = false;
+    };
+
     # Shared building blocks with frappe-nix and odoo-nix: lib.checks.mk names
     # and builds the checks. Its own inputs are nixpkgs and flake-parts, both
     # followed, so it adds one node to the lock.
@@ -62,12 +71,13 @@
       flake-parts,
       wordpress-sqlite-anywhere,
       gitium,
+      bedrock,
       python-devops-nix,
       ...
     }:
     {
       # A site flake's outputs, as a flake-parts module: the v3 Bedrock build
-      # (wordpress-nix.site, modules/site.nix) and the
+      # (wordpress-nix.site, modules/site.nix; templates/bedrock-site) and the
       # dev shell + image (templates/site). Applied to this flake, so the
       # module reaches wordpress-nix's own lib and packages.
       flakeModules.default = nixpkgs.lib.modules.importApply ./modules/flake-module.nix self;
@@ -158,6 +168,15 @@
             rustPkgs ? pkgs,
           }:
           wordpress-sqlite-anywhere.lib.mkTursoPublisher { inherit pkgs rustPkgs; };
+      };
+
+      # `nix flake init -t github:Avunu/wordpress` scaffolds a v3 site: stock
+      # Bedrock (held to the `bedrock` input by the bedrock-template check),
+      # the composer.json delta, a thin flake on wordpress-nix.site, and the
+      # managed Dependabot file. Then `composer update && nix run .#relock`.
+      templates.default = {
+        path = ./templates/bedrock-site;
+        description = "A WordPress site: stock Roots Bedrock, Composer-built and served read-only by wordpress-nix";
       };
 
       # `nix flake init -t github:Avunu/wordpress-nix#site` scaffolds a new
@@ -285,6 +304,11 @@
           in
           bedrockBuild
           // {
+            # The template and the fixture are stock Bedrock, held to the input.
+            bedrock-template = import ./tests/bedrock-template.nix {
+              inherit pkgs bedrock;
+              checks = mk;
+            };
             # Tampered and extra PHP files fail, against a local stand-in for
             # wordpress.org serving the fixture's checksums.
             verify-wp-checksums = import ./tests/verify-wp-checksums.nix {

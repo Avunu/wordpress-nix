@@ -1,0 +1,57 @@
+{
+  "name": "avunu/site-changeme",
+  "type": "project",
+  "license": "proprietary",
+  "description": "A WordPress site on wordpress-nix: stock Roots Bedrock, built by Nix",
+  "repositories": [
+    {
+      "name": "wp-packages",
+      "type": "composer",
+      "url": "https://repo.wp-packages.org",
+      "only": [
+        "wp-plugin/*",
+        "wp-theme/*"
+      ]
+    }
+  ],
+  "require": {
+    "php": ">=8.3",
+    "composer/installers": "^2.3",
+    "oscarotero/env": "^2.1",
+    "roots/bedrock-autoloader": "^1.0",
+    "roots/bedrock-disallow-indexing": "^2.0",
+    "roots/wordpress": "7.1.5",
+    "roots/wp-config": "1.0.0",
+    "vlucas/phpdotenv": "^5.6",
+    "wp-plugin/two-factor": "^0.10",
+    "wp-theme/twentytwentyfive": "^1.0"
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "preferred-install": "dist",
+    "allow-plugins": {
+      "composer/installers": true,
+      "roots/wordpress-core-installer": true
+    },
+    "platform": {
+      "php": "8.4"
+    },
+    "sort-packages": true
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "extra": {
+    "installer-paths": {
+      "web/app/mu-plugins/{$name}/": [
+        "type:wordpress-muplugin"
+      ],
+      "web/app/plugins/{$name}/": [
+        "type:wordpress-plugin"
+      ],
+      "web/app/themes/{$name}/": [
+        "type:wordpress-theme"
+      ]
+    },
+    "wordpress-install-dir": "web/wp"
+  }
+}

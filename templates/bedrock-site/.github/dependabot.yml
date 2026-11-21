@@ -1,0 +1,41 @@
+# Managed by wordpress-nix. Composer moves daily, in groups; nix/vendor-hash
+# follows on every Composer PR through the relock workflow. wordpress-nix
+# itself moves only through its rollout, so there is no nix ecosystem here.
+version: 2
+updates:
+  - package-ecosystem: composer
+    directory: /
+    schedule:
+      interval: daily
+      time: "04:00" # the scaffolder hashes a time from the slug
+      timezone: America/New_York
+    versioning-strategy: increase
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+      semver-patch-days: 1
+      exclude:
+        - roots/wordpress
+        - roots/wordpress-no-content
+    commit-message:
+      prefix: fix(deps)
+    groups:
+      wordpress-core:
+        patterns: ["roots/wordpress*"]
+      wp-plugins:
+        patterns: ["wp-plugin/*", "wp-theme/*"]
+        update-types: [minor, patch]
+      avunu:
+        patterns: ["avunu/*"]
+      php-libs:
+        patterns: ["*"]
+        exclude-patterns: ["roots/wordpress*", "wp-plugin/*", "wp-theme/*", "avunu/*"]
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "Avunu/wordpress*"
+    commit-message:
+      prefix: chore(deps)
