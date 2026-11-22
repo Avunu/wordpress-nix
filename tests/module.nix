@@ -1,483 +1,373 @@
-# NixOS VM test for services.wordpress-nix.
+# NixOS VM test for services.wordpress-nix (v3): one Bedrock site, read-only.
 #
-# Run: nix build .#checks.<system>.module   (needs KVM)
+# Run: nix build .#checks.<system>.module -L   (needs KVM)
 #
-# Test VMs have no internet, so we exercise:
-#   * git mode    — source.path = pkgs.wordpress (a read-only store document root)
-#   * state mode  — core seeded offline (production would `wp core download`)
-#   * socket mode — served over a unix socket with no TCP listener at all
-#   * split plane — wpadmin (writable, managed, owns MariaDB) + wppublic
-#                   (read-only, git mode) over ONE shared database via TCP
-# The first three use a local MariaDB over unix_socket (passwordless, OS-user
-# matched); the split plane exercises the external-DB-over-TCP path instead.
+# The site is templates/bedrock-site built by lib.mkBedrockSite: stock Bedrock,
+# real core, two-factor and twentytwentyfive from its composer.lock. Its vendor
+# tree is a fixed-output derivation fetched from Composer's registries, so a
+# build without a substituter needs the network (the sandbox allows that to an
+# FOD). One test-only mu-plugin is injected (tests/fixtures/module-probe.php).
+#
+#   site  over a unix socket, as the tunnel reaches it in the cluster:
+#     - first boot on an empty database: migrate and cron exit 0
+#     - installed, it serves; old admin, login, uploads and content URLs move
+#     - nothing under uploads runs as PHP; private prefixes are refused
+#     - the code tree cannot be written, by PHP or by `wp plugin install`
+#     - Bedrock's environment: settings and environmentFiles, 0400, env-only S3;
+#       the secret nowhere in the system's closure; a secret rotated in place
+#       reaches PHP without a switch
+#     - platform-environment.php: two-factor for administrators, no application
+#       passwords, no update checks (and no request to make one), no executable
+#       uploads, the constants bridge, plugins kept to their environment (and
+#       kept in the database when another plugin is activated)
+#     - a failed migrate is rolled back from its snapshot; WordPress failing to
+#       load fails the migrate; the next one succeeds
+#     - every unit has its own /tmp; OOM scores; MariaDB not on TCP; no
+#       permission errors
+#   tcp   over :80, uninstalled: the installer, through CAP_NET_BIND_SERVICE
+#
+# Not here yet, so M1 stays open: wp-cloud-files 0.6 offloading to MinIO with
+# env-only S3_*, and a Woo-downloadable attachment staying local. 0.6 is
+# unreleased (0.5 reads constants only and is a `library`, not a
+# `wordpress-plugin`); until it is, this test stops at what the platform owns:
+# the S3_* names reach PHP from the environment alone, and the private prefixes
+# are refused over HTTP.
 {
   pkgs,
   wordpressModule,
+  mkBedrockSite,
 }:
 let
-  # nixpkgs packages themes separately from core, so state mode has to seed one.
-  themeName = "twentytwentyfive";
-  theme = pkgs.wordpressPackages.themes.${themeName};
-
-  # What the public plane serves: an immutable store docroot composed from core,
-  # the site's payload and the platform mu-plugins. Built from nixpkgs' core so
-  # the test does not depend on the pinned download, and with a theme grafted on
-  # because a themeless install renders a 200 with an empty body.
-  splitPlaneDocroot = import ../lib/mk-site-docroot.nix {
+  package = mkBedrockSite {
     inherit pkgs;
-    name = "split-plane-docroot";
-    core = "${pkgs.wordpress}/share/wordpress";
-    themes.${themeName} = theme;
+    name = "module-test";
+    src = ../templates/bedrock-site;
+    php = pkgs.php84;
+    developmentOnlyPlugins = [ "wpcodebox2" ];
+    muPlugins = [
+      ../mu-plugins/platform-environment.php
+      ../mu-plugins/platform-nonce.php
+      ../mu-plugins/platform-user-enumeration.php
+      ./fixtures/module-probe.php
+    ];
+  };
+
+  # What the cluster's secrets would hold: the salts and the S3 key pair. The
+  # S3 secret is a distinctive (and plainly fake) marker, to be looked for in
+  # the system's closure.
+  s3Secret = "s3-secret-closure-probe-marker";
+  secrets = pkgs.writeText "module-test-env" ''
+    ${pkgs.lib.concatMapStrings (k: "${k}='test-${pkgs.lib.toLower k}-0123456789abcdef'\n") [
+      "AUTH_KEY"
+      "SECURE_AUTH_KEY"
+      "LOGGED_IN_KEY"
+      "NONCE_KEY"
+      "AUTH_SALT"
+      "SECURE_AUTH_SALT"
+      "LOGGED_IN_SALT"
+      "NONCE_SALT"
+    ]}
+    S3_KEY='test-key'
+    S3_SECRET='${s3Secret}'
+  '';
+
+  common = {
+    virtualisation.memorySize = 2048;
+    environment.systemPackages = [
+      pkgs.jq
+      pkgs.unzip
+      pkgs.zip
+    ];
+    # Root's 0400, as agenix leaves a secret: read through LoadCredential.
+    environment.etc."wordpress-secrets.env" = {
+      source = secrets;
+      mode = "0400";
+    };
   };
 in
 pkgs.testers.runNixOSTest {
   name = "wordpress-nix";
 
   nodes = {
-    # ---- git (source-managed) ----
-    git =
+    site =
       { ... }:
       {
-        imports = [ wordpressModule ];
-        virtualisation.memorySize = 2048;
+        imports = [
+          wordpressModule
+          common
+        ];
         services.wordpress-nix = {
           enable = true;
-          php = pkgs.php83;
+          inherit package;
           phpOptimize = false; # skip the slow clang/LTO build in CI
-          source = {
-            type = "git";
-            # pkgs.wordpress installs to $out/share/wordpress, so the document
-            # root is that subdirectory — $out itself contains only `share`.
-            path = "${pkgs.wordpress}/share/wordpress";
-          };
-          database.createLocally = true;
-        };
-      };
-
-    # ---- state (flexible) ----
-    state =
-      { config, ... }:
-      {
-        imports = [ wordpressModule ];
-        virtualisation.memorySize = 2048;
-        services.wordpress-nix = {
-          enable = true;
-          php = pkgs.php83;
-          phpOptimize = false;
-          source.type = "state";
-          database.createLocally = true;
-        };
-        environment.systemPackages = [ pkgs.jq ];
-        # Seed core offline (stand-in for `wp core download`), plus a theme.
-        # pkgs.wordpress ships wp-content/themes containing only index.php —
-        # nixpkgs packages themes separately — and an installed site with no
-        # theme renders a 200 with a completely empty body, which is what the
-        # end-to-end assertion below would otherwise trip over.
-        systemd.services.seed-wordpress = {
-          before = [ "wordpress-init.service" ];
-          requiredBy = [ "wordpress-init.service" ];
-          serviceConfig.Type = "oneshot";
-          script = ''
-            dst=/var/lib/wordpress/www
-            if [ ! -e "$dst/wp-includes/version.php" ]; then
-              mkdir -p "$dst"
-              cp -r ${pkgs.wordpress}/share/wordpress/. "$dst/"
-              chmod -R u+w "$dst"
-            fi
-            dest="$dst/wp-content/themes/${themeName}"
-            if [ ! -e "$dest/style.css" ]; then
-              mkdir -p "$dest"
-              cp -r ${theme}/. "$dest/"
-              chmod -R u+w "$dest"
-            fi
-            chown -R wordpress:wordpress "$dst"
-          '';
-        };
-      };
-
-    # ---- socket (unix socket origin, nothing on the network) ----
-    socket =
-      { ... }:
-      {
-        imports = [ wordpressModule ];
-        virtualisation.memorySize = 2048;
-        services.wordpress-nix = {
-          enable = true;
-          php = pkgs.php83;
-          phpOptimize = false;
-          source = {
-            type = "git";
-            # pkgs.wordpress installs to $out/share/wordpress, so the document
-            # root is that subdirectory — $out itself contains only `share`.
-            path = "${pkgs.wordpress}/share/wordpress";
-          };
-          database.createLocally = true;
           socketPath = "/run/wordpress/wp.sock";
+          environmentFiles = [ "/etc/wordpress-secrets.env" ];
+          settings = {
+            S3_BUCKET = "test-media";
+            S3_ENDPOINT = "http://minio.invalid:9000";
+            S3_PUBLIC_URL = "https://media.example.org";
+            S3_DIRECT_UPLOADS = true;
+          };
+          cron.randomizedDelaySec = "5s";
         };
       };
 
-    # ---- split plane: the writable admin face, and the database owner ----
-    wpadmin =
+    tcp =
       { ... }:
       {
-        imports = [ wordpressModule ];
-        virtualisation.memorySize = 2048;
-        networking.firewall.allowedTCPPorts = [ 3306 ];
+        imports = [
+          wordpressModule
+          common
+        ];
         services.wordpress-nix = {
           enable = true;
-          php = pkgs.php83;
+          inherit package;
           phpOptimize = false;
-          # Managed mode is the real admin-plane configuration: pinned core
-          # symlinked out of the store, wp-content mutable, gitium installed.
-          source.type = "managed";
-          plane = {
-            role = "admin";
-            publicUrl = "http://wppublic";
-            adminUrl = "http://wpadmin";
-          };
-          database = {
-            createLocally = true;
-            name = "wordpress";
-            user = "wordpress";
-          };
-        };
-        # The shared database the public plane reads over the network.
-        services.mysql.settings.mysqld.bind-address = "0.0.0.0";
-        systemd.services.mysql-grant-public = {
-          after = [ "mysql.service" ];
-          requires = [ "mysql.service" ];
-          wantedBy = [ "multi-user.target" ];
-          before = [ "wordpress-init.service" ];
-          serviceConfig.Type = "oneshot";
-          script = ''
-            ${pkgs.mariadb}/bin/mysql -u root <<'SQL'
-            CREATE USER IF NOT EXISTS 'wppublic'@'%' IDENTIFIED BY 'publicpw';
-            GRANT ALL PRIVILEGES ON wordpress.* TO 'wppublic'@'%';
-            FLUSH PRIVILEGES;
-            SQL
-          '';
-        };
-      };
-
-    # ---- split plane: the read-only public face ----
-    wppublic =
-      { ... }:
-      {
-        imports = [ wordpressModule ];
-        virtualisation.memorySize = 2048;
-        environment.etc."wp-db-password".text = "publicpw";
-        services.wordpress-nix = {
-          enable = true;
-          php = pkgs.php83;
-          phpOptimize = false;
-          source = {
-            type = "git";
-            path = splitPlaneDocroot;
-          };
-          plane = {
-            role = "public";
-            publicUrl = "http://wppublic";
-            adminUrl = "http://wpadmin";
-            # Visitor logins stay open, which is what a WooCommerce or
-            # membership site needs — and what makes the login gate testable.
-            allowLogin = true;
-          };
-          database = {
-            createLocally = false;
-            host = "wpadmin";
-            name = "wordpress";
-            user = "wppublic";
-            passwordFile = "/etc/wp-db-password";
-          };
+          environmentFiles = [ "/etc/wordpress-secrets.env" ];
+          migrate.enable = false;
         };
       };
   };
 
   testScript = ''
-    start_all()
+    import hashlib
+    import json
+    import shlex
 
-    for machine in (git, state):
-        machine.wait_for_unit("wordpress-init.service")
-        machine.wait_for_unit("mysql.service")
-        machine.wait_for_unit("wordpress.service")
-        machine.wait_for_open_port(80)
-        # secrets file is present and locked down
-        machine.succeed("test -f /var/lib/wordpress/wp-secrets.php")
-        machine.succeed("stat -c '%a' /var/lib/wordpress/wp-secrets.php | grep -x 600")
-        # the generated wp-config is in place -- but WHERE depends on the source
-        # mode, so that is asserted per mode below
-        # uploads is a real writable directory
-        machine.succeed("test -d /var/lib/wordpress/www/wp-content/uploads")
-        machine.succeed("sudo -u wordpress test -w /var/lib/wordpress/www/wp-content/uploads")
-        # cron timer is armed
-        machine.succeed("systemctl is-active wordpress-cron.timer")
-        # core is served: an uninstalled site redirects to the installer
-        # Fetch to a file rather than piping: grep -q exits on the first match,
-        # which SIGPIPEs curl, and pipefail then surfaces curl's exit 23. That
-        # only bites once the body is large enough to still be streaming.
-        machine.succeed("curl -sSL http://localhost/ -o /tmp/home.html")
-        machine.succeed("grep -qi wordpress /tmp/home.html")
+    PKG = "${package}"
 
-    # state mode: a real docroot, so ABSPATH is the docroot and the config is here
-    state.succeed("test -f /var/lib/wordpress/www/wp-config.php")
+    def wp(args, machine=site):
+        return machine.succeed(f"runuser -u wordpress -- wp {args}").strip()
 
-    # git mode: core files are symlinks into the read-only store
-    git.succeed("readlink /var/lib/wordpress/www/index.php | grep -q /nix/store")
+    def php(code):
+        return wp(f"eval {shlex.quote(code)}")
 
-    # Regression: PHP resolves those symlinks, so ABSPATH is the store tree and
-    # the generated wp-config.php has to live there too. While it was written
-    # into the docroot instead, WordPress found no config at all and redirected
-    # every request to setup-config.php -- git mode could only ever serve the
-    # installer, never a configured site. A configured site whose database is
-    # reachable but empty asks for install.php instead.
-    loc = git.succeed("curl -s -o /dev/null -D - http://localhost/ | grep -i '^location:'")
-    assert "install.php" in loc, f"git mode did not reach a configured site: {loc}"
-    assert "setup-config.php" not in loc, f"git mode cannot find wp-config.php: {loc}"
-    git.succeed(
-        "test -f \"$(dirname \"$(readlink -f /var/lib/wordpress/www/wp-load.php)\")/wp-config.php\""
-    )
-
-    # end-to-end: install over the socket-auth DB, then confirm the title renders
-    state.succeed(
-        "su -s /bin/sh wordpress -c '"
-        "wp core install --url=http://localhost --title=StateSite "
-        "--admin_user=admin --admin_password=admin_pw_123 "
-        "--admin_email=admin@example.com --skip-email'"
-    )
-    # A themeless install returns 200 with an empty body, so assert the body is
-    # actually rendered, not just that the request succeeded.
-    state.succeed("curl -sS http://localhost/ -o /tmp/installed.html")
-    state.succeed("grep -q StateSite /tmp/installed.html")
-    state.succeed("grep -q '</html>' /tmp/installed.html")
-
-    # ---- logging: journald fields, JSON access log, PHP errors via Caddy ----
-    def journal_has(unit, jq_filter):
-        state.wait_until_succeeds(f"journalctl -u {unit} -o json | jq -e -s '{jq_filter}' >/dev/null")
-
-    for unit, role in [("wordpress", "web"), ("wordpress-init", "init"), ("mysql", "db")]:
-        journal_has(unit, f'any(.[]; .APP_SERVICE == "{role}" and .APP_SITE == "wordpress")')
-    journal_has("wordpress", 'any(.[]; .SYSLOG_IDENTIFIER == "wordpress")')
-    # every request is one JSON line from Caddy's access logger
-    journal_has(
-        "wordpress",
-        'any(.[]; .MESSAGE | fromjson? | .logger // "" | startswith("http.log.access"))',
-    )
-    # error_log is unset under systemd, so PHP errors take the SAPI logger:
-    # FrankenPHP writes them through Caddy's JSON logger, with a level
-    state.succeed(
-        "install -o wordpress -g wordpress -m 0644 /dev/stdin /var/lib/wordpress/www/logtest.php"
-        " <<< '<?php error_log(\"wordpress-nix-logtest\"); var_dump(ini_get(\"error_log\"));'"
-    )
-    state.succeed("curl -sS http://localhost/logtest.php -o /tmp/logtest.txt")
-    state.succeed("grep -qF 'string(0) \"\"' /tmp/logtest.txt")
-    journal_has(
-        "wordpress",
-        'any(.[]; .APP_SITE == "wordpress" and (.MESSAGE | fromjson? | .logger == "frankenphp" and .msg == "wordpress-nix-logtest" and .level != null))',
-    )
-
-    # ---- socket mode ----
-    socket.wait_for_unit("wordpress-init.service")
-    socket.wait_for_unit("wordpress.service")
-    socket.wait_for_file("/run/wordpress/wp.sock")
-    # group-openable, so a co-located connector can reach it (Caddy's own
-    # default would be 0200 and unopenable)
-    socket.succeed("stat -c '%a' /run/wordpress/wp.sock | grep -x 660")
-    # the site serves over the socket...
-    socket.succeed(
-        "curl -sSL --unix-socket /run/wordpress/wp.sock http://localhost/ -o /tmp/sock.html"
-    )
-    socket.succeed("grep -qi wordpress /tmp/sock.html")
-    # ...and nothing at all listens on the network
-    socket.fail("curl -sS --max-time 5 http://localhost/")
-    socket.fail("ss -HltnO | grep -qE ':(80|443)\\s'")
-    # no port-binding capability is retained in socket mode
-    socket.fail(
-        "systemctl show -p AmbientCapabilities wordpress.service"
-        " | grep -qi cap_net_bind_service"
-    )
-    # a stale socket left by a crash does not block the rebind
-    socket.succeed("systemctl stop wordpress.service")
-    socket.succeed("touch /run/wordpress/wp.sock")
-    socket.succeed("systemctl start wordpress.service")
-    socket.wait_for_file("/run/wordpress/wp.sock")
-    socket.succeed(
-        "curl -sSL --unix-socket /run/wordpress/wp.sock http://localhost/ -o /tmp/sock.html"
-    )
-
-    # ---- split plane: one database, two faces ----
-    for machine in (wpadmin, wppublic):
-        machine.wait_for_unit("wordpress-init.service")
-        machine.wait_for_unit("wordpress.service")
-        machine.wait_for_open_port(80)
-    wpadmin.wait_for_unit("mysql.service")
-
-    def status(machine, url):
-        return machine.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' {url}").strip()
-
-    # Only the admin plane ever writes schema.
-    wpadmin.succeed(
-        "su -s /bin/sh wordpress -c '"
-        "wp core install --url=http://wpadmin --title=SplitSite "
-        "--admin_user=admin --admin_password=admin_pw_123 "
-        "--admin_email=admin@example.com --skip-email'"
-    )
-    # In production both planes serve the same wp-content, composed from one
-    # site repo. Mirror that here: give the admin plane the theme the public
-    # plane's store docroot carries, and activate it. Without this the planes
-    # disagree about the active theme and the public face renders an empty body.
-    wpadmin.succeed(
-        "cp -rL ${theme}/. /var/lib/wordpress/www/wp-content/themes/${themeName}/"
-        " ; chown -R wordpress:wordpress /var/lib/wordpress/www/wp-content/themes"
-    )
-    wpadmin.succeed("su -s /bin/sh wordpress -c 'wp theme activate ${themeName}'")
-
-    # Pretty permalinks, as every real site has. WordPress only registers the
-    # /wp-json/ rewrite when a permalink structure is set, so without this the
-    # REST API exists only at /?rest_route=... and the public plane's "the REST
-    # API stays open" assertion would be testing a 404. Caddy's php_server is the
-    # front controller, so no .htaccess is involved.
-    wpadmin.succeed(
-        "su -s /bin/sh wordpress -c 'wp rewrite structure /%postname%/ && wp rewrite flush'"
-    )
-
-    wpadmin.succeed(
-        "su -s /bin/sh wordpress -c '"
-        "wp user create sub sub@example.com --role=subscriber --user_pass=sub_pw_123'"
-    )
-    post_id = wpadmin.succeed(
-        "su -s /bin/sh wordpress -c '"
-        "wp post create --post_title=SharedPost --post_status=publish --porcelain'"
-    ).strip()
-
-    # The point of the whole design: the public plane reads the admin plane's
-    # database over TCP, so content is shared with no sync step at all.
-    wppublic.succeed("curl -sS http://wppublic/ -o /tmp/home.html")
-    # A themeless install answers 200 with an empty body, so assert the page was
-    # actually rendered before asserting what is in it.
-    wppublic.succeed("grep -q '</html>' /tmp/home.html")
-    wppublic.succeed("grep -q SplitSite /tmp/home.html")
-    wppublic.succeed(f"curl -sSL 'http://wppublic/?p={post_id}' -o /tmp/post.html")
-    wppublic.succeed("grep -q SharedPost /tmp/post.html")
-
-    # ---- the public plane turns administration away ----
-    assert status(wppublic, "http://wppublic/wp-admin/") == "302"
-    loc = wppublic.succeed("curl -s -o /dev/null -D - http://wppublic/wp-admin/ | grep -i '^location:'")
-    assert "http://wpadmin/wp-admin/" in loc, f"wp-admin redirect went to {loc}"
-
-    # admin-ajax must still reach PHP: WooCommerce, Give and every form plugin
-    # POST to it from the public side. With no action, WordPress answers 400 "0".
-    assert status(wppublic, "http://wppublic/wp-admin/admin-ajax.php") == "400"
-    wppublic.succeed("curl -sS http://wppublic/wp-admin/admin-ajax.php -o /tmp/ajax.txt")
-    wppublic.succeed("grep -qx 0 /tmp/ajax.txt")
-
-    assert status(wppublic, "http://wppublic/xmlrpc.php") == "403"
-    assert status(wppublic, "http://wppublic/wp-cron.php") == "404"
-    assert status(wppublic, "http://wppublic/wp-includes/version.php") == "404"
-
-    # /wp-json stays open — capability checks, not a path list, deny admin there
-    assert status(wppublic, "http://wppublic/wp-json/wp/v2/posts") == "200"
-    # ...but anonymous user enumeration is still refused
-    assert status(wppublic, "http://wppublic/wp-json/wp/v2/users") == "401"
-
-    # ---- the session rule ----
-    def login(machine, host, user, password):
-        machine.succeed(
-            "curl -s -o /tmp/login.html -D /tmp/login.hdr"
-            " -b 'wordpress_test_cookie=WP+Cookie+check'"
-            f" --data-urlencode 'log={user}' --data-urlencode 'pwd={password}'"
-            " --data 'wp-submit=Log+In'"
-            f" http://{host}/wp-login.php"
-        )
-
-    # An administrator cannot obtain a session on the public plane...
-    login(wppublic, "wppublic", "admin", "admin_pw_123")
-    wppublic.fail("grep -qi 'set-cookie: wordpress_logged_in' /tmp/login.hdr")
-    wppublic.succeed("grep -qi 'administration host' /tmp/login.html")
-
-    # ...while a subscriber can, because that is who this plane serves.
-    login(wppublic, "wppublic", "sub", "sub_pw_123")
-    wppublic.succeed("grep -qi 'set-cookie: wordpress_logged_in' /tmp/login.hdr")
-
-    # The same administrator logs in normally on the admin plane.
-    login(wpadmin, "wpadmin", "admin", "admin_pw_123")
-    wpadmin.succeed("grep -qi 'set-cookie: wordpress_logged_in' /tmp/login.hdr")
-
-    # Cookie names are derived from siteurl, which differs per plane, so an
-    # admin cookie is not even read on the public host.
-    def cookiehash(machine):
-        return machine.succeed(
-            "sudo -u wordpress wp eval 'echo COOKIEHASH;'"
+    def request(path, fmt="%{http_code}", headers=""):
+        return site.succeed(
+            f"curl -sS -o /dev/null -w {shlex.quote(fmt)} --max-time 30"
+            f" --unix-socket /run/wordpress/wp.sock {headers} http://localhost{path}"
         ).strip()
 
-    assert cookiehash(wpadmin) != cookiehash(wppublic), "COOKIEHASH must differ between planes"
+    def body(path, headers=""):
+        return site.succeed(
+            f"curl -sS --max-time 30 --unix-socket /run/wordpress/wp.sock {headers} http://localhost{path}"
+        )
 
-    # ---- the admin plane keeps everything the public plane gave up ----
-    wpadmin.succeed("systemctl is-active wordpress-cron.timer")
-    wppublic.fail("systemctl is-active wordpress-cron.timer")
-    # Regression: managed mode keeps wp-config.php in the store core, not the
-    # docroot, so wp-cli has to be pointed at the core. Pointing it at the
-    # docroot made every `wp` call fail with "'wp-config.php' not found" —
-    # silently disabling cron on the one plane that owns it.
-    wpadmin.succeed("systemctl start wordpress-cron.service")
-    wpadmin.succeed("systemctl show -p Result wordpress-cron.service | grep -x Result=success")
-    assert status(wpadmin, "http://wpadmin/xmlrpc.php") != "403"
-    # The constant is asserted through WordPress rather than by reading a file:
-    # in git mode wp-config.php lives inside the store tree, not the docroot.
-    wppublic.succeed(
-        "sudo -u wordpress wp eval 'var_export(DISALLOW_FILE_MODS);'"
-        " | grep -qx true"
-    )
-    # Uploads must be writable and must NOT resolve into the read-only store.
-    wppublic.succeed(
-        "sudo -u wordpress wp eval 'echo wp_upload_dir()[\"basedir\"];'"
-        " | grep -qx /var/lib/wordpress/www/wp-content/uploads"
-    )
-    wppublic.succeed("sudo -u wordpress test -w /var/lib/wordpress/www/wp-content/uploads")
+    def unit_ok(unit):
+        site.succeed(f"systemctl show -p Result {unit} | grep -qx Result=success")
 
-    # gitium: installed by the platform, activated by a filter, so the site repo
-    # neither carries it nor records it — and it never loads on the public plane,
-    # whose working tree is a read-only store path.
-    wpadmin.succeed("test -x /var/lib/wordpress/www/wp-content/plugins/gitium/inc/ssh-git")
-    wpadmin.succeed(
-        "su -s /bin/sh wordpress -c 'wp plugin list --status=active --field=name'"
-        " | grep -qx gitium"
-    )
-    wppublic.fail(
-        "su -s /bin/sh wordpress -c 'wp plugin list --status=active --field=name'"
-        " | grep -qx gitium"
-    )
+    start_all()
 
-    # Reconciling on a timer is what replaces gitium's webhook: gitium only acts
-    # on wp-admin's own events, so without this a developer's push would never
-    # reach the site. A webhook would mean an unauthenticated PHP endpoint and,
-    # behind an identity proxy, a bypass carved through it.
-    wpadmin.succeed("systemctl is-active wordpress-gitium-merge.timer")
-    wppublic.fail("systemctl is-active wordpress-gitium-merge.timer")
-    # It runs. There is no remote in this fixture, so the push fails and the
-    # reconcile returns false; what is asserted is that the unit reaches gitium
-    # at all rather than dying on a missing function or an unreadable config.
-    wpadmin.succeed("systemctl start wordpress-gitium-merge.service")
-    # Regression: gitium's own gitium_auto_push() returns before touching git
-    # unless the private key is in the `gitium_keypair` option, and the platform
-    # supplies it as GIT_KEY_FILE instead — so every push gitium wires to
-    # wp-admin's events was silently dead. The platform's reconcile must not
-    # depend on that option.
-    wpadmin.succeed(
-        "sudo -u wordpress wp eval 'var_export(function_exists(\"wp_platform_gitium_reconcile\"));'"
-        " | grep -qx true"
-    )
-    wpadmin.succeed(
-        "sudo -u wordpress wp eval 'var_export(empty(get_option(\"gitium_keypair\")));'"
-        " | grep -qx true"
-    )
-    wpadmin.succeed(
-        "systemctl show -p Result wordpress-gitium-merge.service | grep -x Result=success"
-    )
-    # Both callers must take the SAME lock: the web service and this timer have
-    # separate PrivateTmp, and gitium's default lock lives in the temp directory.
-    wpadmin.succeed(
-        "sudo -u wordpress wp eval 'echo apply_filters(\"gitium_lock_path\", \"unset\");'"
-        " | grep -qx /var/lib/wordpress/gitium.lock"
-    )
+    with subtest("first boot, empty database: migrate and cron have nothing to do"):
+        for unit in ("wordpress-init", "mysql", "wordpress-migrate", "frankenphp"):
+            site.wait_for_unit(f"{unit}.service")
+        site.wait_for_file("/run/wordpress/wp.sock")
+        unit_ok("wordpress-migrate.service")
+        site.succeed("journalctl -u wordpress-migrate -o cat | grep -q 'not installed'")
+        site.succeed("systemctl start wordpress-cron.service")
+        unit_ok("wordpress-cron.service")
+        site.succeed("systemctl is-active wordpress-cron.timer")
+        site.succeed("systemctl show -p RandomizedDelayUSec wordpress-cron.timer | grep -qx RandomizedDelayUSec=5s")
+
+    with subtest("Bedrock's environment: settings and secrets, private to the service user"):
+        site.succeed("stat -c '%a %U' /run/wordpress/bedrock.env | grep -qx '400 wordpress'")
+        site.succeed(f"test \"$(readlink {PKG}/.env)\" = /run/wordpress/bedrock.env")
+        site.succeed("grep -qx \"S3_KEY='test-key'\" /run/wordpress/bedrock.env")
+        site.succeed("grep -qx \"WP_ENV='production'\" /run/wordpress/bedrock.env")
+        # The secret is in the system's closure only in this test's own
+        # secrets file (a store path here, agenix's /run/agenix in the cluster).
+        site.succeed("grep -qF ${s3Secret} ${secrets}")
+        site.succeed("nix-store -qR /run/current-system | grep -vxF ${secrets} > /tmp/closure")
+        site.succeed("grep -qxF ${package} /tmp/closure")
+        found = site.succeed("xargs -a /tmp/closure grep -rlFs ${s3Secret} || true").strip()
+        assert found == "", f"the S3 secret is in the store:\n{found}"
+
+    with subtest("installed, the site serves"):
+        wp("core install --url=http://localhost --title=ModuleSite --admin_user=admin"
+           " --admin_password=admin_pw_123 --admin_email=admin@example.com --skip-email")
+        wp("plugin activate --all")
+        wp("rewrite structure /%postname%/")
+        # wp-cli reads the same environment (env-only S3: the key from a file).
+        assert php("echo WP_ENV;") == "production"
+        assert php('echo getenv("S3_KEY");') == "test-key"
+        assert php('echo getenv("S3_BUCKET");') == "test-media"
+        page = body("/")
+        assert "ModuleSite" in page and "</html>" in page, page[:2000]
+        assert request("/wp-json/") == "200"
+        assert request("/wp/wp-login.php") == "200"
+        assert request("/wp-admin/") == "301"
+        assert request("/wp-admin/", "%{redirect_url}").endswith("/wp/wp-admin/")
+        assert request("/wp-login.php?x=1") == "308"
+        assert request("/wp-login.php?x=1", "%{redirect_url}").endswith("/wp/wp-login.php?x=1")
+
+    with subtest("behind the socket, PHP takes the client from Cloudflare's headers"):
+        seen = json.loads(body("/wp-json/probe/v1/env",
+                               "-H 'CF-Connecting-IP: 203.0.113.7' -H 'X-Forwarded-Proto: https'"))
+        assert seen["remote_addr"] == "203.0.113.7", seen
+        assert seen["https"] is True, seen
+        # env-only S3: the names reach the web server's PHP from the environment.
+        assert seen["s3_bucket"] == "test-media" and seen["s3_key_set"] is True, seen
+        assert seen["tmp"] == "/tmp/", seen
+
+    with subtest("the code tree is read-only; uploads are writable"):
+        seen = json.loads(body("/wp-json/probe/v1/env"))
+        assert seen["docroot_rw"] is False and seen["uploads_rw"] is True, seen
+        site.succeed("test -f /var/lib/wordpress/uploads/probe.txt")
+        assert php("var_export(DISALLOW_FILE_MODS);") == "true"
+        assert php("var_export(wp_is_file_mod_allowed(\"probe\"));") == "false"
+        site.succeed(
+            "mkdir -p /tmp/p/hello-probe && echo '<?php /* Plugin Name: hello-probe */' > /tmp/p/hello-probe/hello-probe.php"
+            " && cd /tmp/p && zip -qr /tmp/hello-probe.zip hello-probe && chmod 0644 /tmp/hello-probe.zip"
+        )
+        site.fail("runuser -u wordpress -- wp plugin install /tmp/hello-probe.zip")
+        site.fail(f"test -e {PKG}/web/app/plugins/hello-probe")
+
+    with subtest("routes: nothing under uploads runs as PHP; private prefixes refused"):
+        site.succeed(
+            "cd /var/lib/wordpress/uploads && install -d -o wordpress -g wordpress 2024/01 cwicly woocommerce_uploads"
+            " && echo '<?php echo 1;' > 2024/01/x.php && echo '<?php echo 1;' > x.phtml"
+            " && echo zip > woocommerce_uploads/a.zip && echo 'body{}' > cwicly/x.css"
+            " && chown -R wordpress:wordpress ."
+        )
+        assert request("/app/uploads/2024/01/x.php") == "403"
+        assert request("/app/uploads/x.phtml") == "403"
+        assert request("/app/uploads/woocommerce_uploads/a.zip") == "403"
+        assert request("/app/uploads/cwicly/x.css") == "200"
+        assert request("/wp-content/uploads/2024/01/a.jpg") == "301"
+        assert request("/wp-content/uploads/2024/01/a.jpg", "%{redirect_url}") == "https://media.example.org/2024/01/a.jpg"
+        assert request("/wp-content/uploads/cwicly/x.css", "%{redirect_url}").endswith("/app/uploads/cwicly/x.css")
+        assert request("/wp-content/uploads/woocommerce_uploads/a.zip", "%{redirect_url}").endswith(
+            "/app/uploads/woocommerce_uploads/a.zip")
+        assert request("/wp-content/plugins/two-factor/readme.txt") == "200"
+        assert request("/wp/wp-includes/version.php") == "404"
+        assert request("/wp/wp-includes/js/tinymce/wp-tinymce.php") == "200"
+        assert request("/xmlrpc.php") == "403"
+        assert request("/wp/xmlrpc.php") == "403"
+        assert request("/wp/wp-cron.php") == "404"
+        assert request("/wp-config.php") == "404"
+
+    with subtest("platform-environment.php"):
+        # Two-factor: the Email provider for anyone who can manage_options.
+        assert php('echo get_class(Two_Factor_Core::get_primary_provider_for_user(1));') == "Two_Factor_Email"
+        wp("user create sub sub@example.com --role=subscriber --user_pass=sub_pw_123")
+        assert php('var_export(Two_Factor_Core::is_user_using_two_factor(get_user_by("login", "sub")->ID));') == "false"
+        assert php("var_export(wp_is_application_passwords_available());") == "false"
+        # No update checks: the transients are answered locally, core's checks
+        # are unhooked, and one started anyway never leaves.
+        assert php('echo json_encode(get_site_transient("update_plugins")->response);') == "[]"
+        site.succeed("rm -f /var/lib/wordpress/probe-http.log")
+        for event in ("wp_update_plugins", "wp_update_themes", "wp_version_check"):
+            wp(f"cron event schedule {event} now")
+            wp(f"cron event run {event}")
+        php('do_action("load-plugins.php"); do_action("load-themes.php"); do_action("load-update-core.php");')
+        wp("plugin list")
+        assert php('echo wp_remote_post("https://api.wordpress.org/plugins/update-check/1.1/")->get_error_code();') \
+            == "wordpress_nix_read_only"
+        php('wp_remote_get("http://probe.invalid/");')  # the probe sees what does leave
+        site.succeed("grep -q probe.invalid /var/lib/wordpress/probe-http.log")
+        site.fail("grep api.wordpress.org /var/lib/wordpress/probe-http.log")
+        assert php('echo has_action("init", "wp_schedule_update_checks") ? "on" : "off";') == "off"
+        # The constants bridge and the admin memory limit.
+        assert php("echo WC_LOG_HANDLER;") == "WC_Log_Handler_DB"
+        assert php("var_export(S3_DIRECT_UPLOADS);") == "true"
+        assert php('echo apply_filters("admin_memory_limit", WP_MAX_MEMORY_LIMIT);') == "384M"
+        # Executable uploads are refused before they are stored.
+        assert php('echo apply_filters("wp_handle_upload_prefilter", ["name" => "x.php.jpg"])["error"] ?? "none";') != "none"
+        assert php('echo apply_filters("wp_handle_upload_prefilter", ["name" => "x.jpg"])["error"] ?? "none";') == "none"
+        # Development-only plugins never load in production.
+        assert php('echo json_encode(wp_platform_filter_active_plugins(["wpcodebox2/wpcodebox2.php", "two-factor/two-factor.php"]));') \
+            == '["two-factor\\/two-factor.php"]'
+        # ... and stay active in the database when a plugin is (de)activated
+        # here (a `wp restore` into dev still has WPCodeBox on).
+        raw = "global $wpdb; echo $wpdb->get_var(\"SELECT option_value FROM $wpdb->options WHERE option_name = 'active_plugins'\");"
+        php('global $wpdb; $p = get_option("active_plugins"); $p[] = "wpcodebox2/wpcodebox2.php";'
+            ' $wpdb->update($wpdb->options, ["option_value" => serialize($p)], ["option_name" => "active_plugins"]);')
+        assert "wpcodebox2/wpcodebox2.php" in php(raw)
+        assert "wpcodebox2" not in php('echo json_encode(get_option("active_plugins"));')
+        wp("plugin deactivate two-factor")
+        stored = php(raw)
+        assert "wpcodebox2/wpcodebox2.php" in stored and "two-factor" not in stored, stored
+        wp("plugin activate two-factor")
+        stored = php(raw)
+        assert "wpcodebox2/wpcodebox2.php" in stored and "two-factor/two-factor.php" in stored, stored
+        # Production sends mail.
+        assert php('echo has_filter("pre_wp_mail") ? "off" : "on";') == "on"
+
+    with subtest("a failed migrate is rolled back from its verified snapshot"):
+        wp("option update blogname Before")
+        site.succeed("touch /var/lib/wordpress/probe-fail-migrate && rm -f /var/lib/wordpress/.wordpress-migrate-build")
+        site.fail("systemctl restart wordpress-migrate.service")
+        assert wp("option get blogname") == "Before", "the rollback did not restore the database"
+        site.succeed("journalctl -u wordpress-migrate -o cat | grep -q 'MIGRATION FAILED'")
+        site.succeed("journalctl -u wordpress-migrate -o cat | grep -q 'rollback: restored'")
+        site.succeed("stat -c '%a' /var/lib/wordpress/snapshots | grep -qx 700")
+        site.succeed("stat -c '%a' /var/lib/wordpress/snapshots/premigrate-*.sql.gz | sort -u | grep -qx 600")
+        # The site kept serving through it.
+        assert request("/") == "200"
+
+        site.succeed("rm /var/lib/wordpress/probe-fail-migrate")
+
+        # WordPress that does not load is a failed migrate, not "not installed".
+        site.succeed("touch /var/lib/wordpress/probe-broken")
+        site.fail("systemctl restart wordpress-migrate.service")
+        site.succeed("journalctl -u wordpress-migrate -o cat | grep -q 'is-installed failed (exit 255)'")
+        site.succeed("rm /var/lib/wordpress/probe-broken")
+
+        site.succeed("systemctl restart wordpress-migrate.service")
+        unit_ok("wordpress-migrate.service")
+        site.succeed(f"test \"$(cat /var/lib/wordpress/.wordpress-migrate-build)\" = {PKG}")
+        # The same build again: nothing to do.
+        site.succeed("systemctl restart wordpress-migrate.service")
+        site.succeed("journalctl -u wordpress-migrate -o cat | grep -q 'build unchanged'")
+
+    with subtest("cron runs on the installed site"):
+        site.succeed("systemctl start wordpress-cron.service")
+        unit_ok("wordpress-cron.service")
+
+    with subtest("every unit has its own /tmp; PHP dies before the database does"):
+        for unit in ("wordpress-init", "wordpress-migrate", "frankenphp", "wordpress-cron"):
+            site.succeed(f"systemctl show -p PrivateTmp {unit} | grep -qx PrivateTmp=yes")
+            site.succeed(f"systemctl show -p ProtectSystem {unit} | grep -qx ProtectSystem=strict")
+        site.succeed("systemctl show -p OOMScoreAdjust mysql | grep -qx OOMScoreAdjust=-500")
+        site.succeed("systemctl show -p OOMScoreAdjust frankenphp | grep -qx OOMScoreAdjust=300")
+        site.fail("ss -HltnO | grep -qE ':(80|443)\\s'")
+        # MariaDB is on its unix socket only.
+        listening = site.succeed("ss -Hltn")
+        assert ":3306" not in listening, listening
+        site.succeed("test -S /run/mysqld/mysqld.sock")
+        site.succeed("stat -c '%a' /run/wordpress/wp.sock | grep -qx 660")
+
+    with subtest("a secret rotated in place reaches PHP without a switch"):
+        before = site.succeed("systemctl show -p InvocationID --value frankenphp").strip()
+        site.succeed(
+            "sed s/test-key/rotated-key/ /etc/wordpress-secrets.env > /etc/wordpress-secrets.env.new"
+            " && chmod 0400 /etc/wordpress-secrets.env.new"
+            " && mv -f /etc/wordpress-secrets.env.new /etc/wordpress-secrets.env"
+        )
+        site.wait_until_succeeds("grep -qx \"S3_KEY='rotated-key'\" /run/wordpress/bedrock.env", timeout=60)
+        site.wait_for_unit("frankenphp.service")
+        site.wait_for_file("/run/wordpress/wp.sock")
+        assert site.succeed("systemctl show -p InvocationID --value frankenphp").strip() != before
+        want = hashlib.md5(b"rotated-key").hexdigest()
+        site.wait_until_succeeds(
+            "curl -sS --max-time 30 --unix-socket /run/wordpress/wp.sock http://localhost/wp-json/probe/v1/env"
+            f" | jq -e '.s3_key_md5 == \"{want}\"'",
+            timeout=60,
+        )
+        unit_ok("wordpress-migrate.service")
+
+    with subtest("no permission errors in the journal"):
+        journal = site.succeed(
+            "journalctl -o cat --no-pager -u frankenphp -u wordpress-init -u wordpress-migrate -u wordpress-cron"
+        )
+        for bad in ("Permission denied", "Read-only file system", "EACCES", "EROFS", "PHP Warning", "PHP Fatal"):
+            assert bad not in journal, f"{bad} in the journal:\n{journal}"
+
+    with subtest("over TCP: the installer, on :80 without root"):
+        tcp.wait_for_unit("frankenphp.service")
+        tcp.wait_for_open_port(80)
+        loc = tcp.succeed("curl -s -o /dev/null -D - http://localhost/ | grep -i '^location:'")
+        assert "/wp/wp-admin/install.php" in loc, loc
+        tcp.succeed("systemctl show -p AmbientCapabilities frankenphp | grep -qi cap_net_bind_service")
   '';
 }

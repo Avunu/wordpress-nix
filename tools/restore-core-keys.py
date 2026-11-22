@@ -12,7 +12,8 @@ lines are replaced by the standard ones. Column definitions are kept as dumped.
 
 Usage: restore-core-keys <dump.sql> <standard-schema.sql> <out.sql>
 
-The Nix package supplies standard-schema.sql from the platform's pinned core:
+The Nix package supplies standard-schema.sql from --core DIR, a Bedrock site's
+web/wp, or the platform's pinned core:
     nix run github:Avunu/wordpress#restore-core-keys -- dump.sql fixed.sql
 """
 import re

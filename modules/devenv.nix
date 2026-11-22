@@ -1,56 +1,69 @@
-# devenv shell module for WordPress site repos: the `perSystem.wordpress-nix`
-# option namespace, and from it a dev shell that runs the site the way the
-# platform does -- the pinned core over the repo's wp-content, the platform PHP
-# with the driver's native extensions, FrankenPHP, the WordPress SQLite
-# Anywhere drop-in -- with a database that needs no server by default.
+# devenv shell module for a Bedrock site repository: `nix develop` (or
+# `devenv shell`) in a site from templates/bedrock-site gives the site the way
+# production runs it -- the platform's PHP and FrankenPHP serving web/, MariaDB,
+# Mailpit -- over the live checkout, where Bedrock's development environment
+# allows file modifications (config/environments/development.php).
 #
-# The same options build the site's OCI image (`nix build .#image`), so the
-# thing you develop against is the thing that ships.
+#   composer install          vendor/, web/wp and the Composer plugins, in the tree
+#   devenv up                 frankenphp + mariadb + mailpit  ->  $WP_HOME
+#   wp restore [--at T]       the newest (or chosen) dev-restore dump of the site
+#   relock                    nix run .#relock after a composer.lock change
+#
+# Bedrock reads its configuration from the environment first and .env second
+# (Dotenv, immutable): the shell sets WP_ENV, WP_HOME, the DB_* names and the
+# plugin lists, and .env (gitignored, written once with fresh salts) holds the
+# salts and whatever secrets a developer adds (S3_KEY, ...). The platform
+# mu-plugins are copied into web/app/mu-plugins (gitignored) as the package
+# injects them.
 {
   lib,
   flake-parts-lib,
+  config,
   inputs,
   ...
 }:
 let
-  inherit (lib) mkOption mkEnableOption types;
+  inherit (lib) mkOption types;
   inherit (flake-parts-lib) mkPerSystemOption;
 
+  site = config.wordpress-nix.site;
+
   # Per-site port offset, 0..899, hashed from the site name: every clone of a
-  # site on every machine gets the same port, and two different sites can run
-  # side by side. Two clones of one site at once are devenv's port allocator's
-  # problem, which is what it is for.
+  # site on every machine gets the same port, and two sites can run side by side.
   portOffsetFor =
     siteName:
     lib.mod (lib.fromHexString (builtins.substring 0 4 (builtins.hashString "sha256" siteName))) 900;
+
+  platformMuPlugins = [
+    ../mu-plugins/platform-environment.php
+    ../mu-plugins/platform-nonce.php
+    ../mu-plugins/platform-user-enumeration.php
+  ];
 in
 {
   options.perSystem = mkPerSystemOption (
-    { config, pkgs, ... }:
+    { pkgs, ... }:
     {
       options.wordpress-nix = {
-        enable = mkEnableOption "WordPress site devenv shell";
+        enable = mkOption {
+          type = types.bool;
+          default = site != null;
+          defaultText = lib.literalExpression "wordpress-nix.site != null";
+          description = "The site's dev shell (devShells.default).";
+        };
 
         siteName = mkOption {
           type = types.strMatching "^[a-z0-9][a-z0-9-]*$";
-          description = "Site identifier: ports are hashed from it, and it names the image.";
-          example = "mysite";
-        };
-
-        siteRoot = mkOption {
-          type = types.path;
-          description = ''
-            The site repo's root (where wp-content/ lives). Used for the image
-            build; the dev shell uses the live checkout at $DEVENV_ROOT.
-          '';
-          example = lib.literalExpression "./.";
+          default = if site != null then site.name else "site";
+          defaultText = lib.literalExpression "wordpress-nix.site.name";
+          description = "Ports are hashed from it, and `wp restore` reads its dumps (wordpress/<siteName>).";
         };
 
         php = mkOption {
           type = types.package;
-          default = pkgs.php85;
-          defaultText = lib.literalExpression "pkgs.php85";
-          description = "The base PHP. The SQLite Anywhere plugin requires 8.5.";
+          default = pkgs.${if site != null then site.php else "php84"};
+          defaultText = lib.literalExpression "pkgs.\${wordpress-nix.site.php}";
+          description = "The base PHP, as the site builds with it.";
         };
 
         port = mkOption {
@@ -59,121 +72,10 @@ in
           description = "The HTTP port; null hashes one from siteName (8100-8999).";
         };
 
-        database = {
-          type = mkOption {
-            type = types.enum [
-              "sqlite"
-              "turso"
-              "mysql"
-            ];
-            default = "sqlite";
-            description = ''
-              Where the data lives in the dev shell.
-
-              `sqlite`: a file under .devenv/state, through the same driver the
-              remote engines use -- no server, and `wp-import` fills it from a
-              MySQL dump or a SQLite file.
-              `turso`: a local `tursodb --sync-server` (or `database.turso.url`),
-              read through the embedded replica as in production.
-              `mysql`: devenv's MariaDB, for parity with a legacy host.
-            '';
-          };
-
-          turso = {
-            url = mkOption {
-              type = types.nullOr types.str;
-              default = null;
-              description = ''
-                A Turso database to develop against instead of a local
-                `tursodb`. The token comes from WP_TURSO_TOKEN in the
-                environment (a `.env` file, loaded by `devenv shell`).
-              '';
-              example = "turso://site-org.aws-us-east-1.turso.io";
-            };
-            embedded = mkOption {
-              type = types.bool;
-              default = true;
-              description = ''
-                Serve reads from an embedded replica inside FrankenPHP, as the
-                platform does. Only the server process holds the replica;
-                `wp` (wp-cli) always talks to the primary.
-              '';
-            };
-          };
-        };
-
-        productionOnlyPlugins = mkOption {
-          type = types.listOf types.str;
-          default = [
-            # Security, anti-spam, remote management: no environment switch of
-            # their own; time and per-request writes for nothing here.
-            "patchstack"
-            "cleantalk-spam-protect"
-            "wordfence"
-            "sucuri-scanner"
-            "mainwp-child"
-            # CAPTCHA gates whose keys live in the database: a widget bound to
-            # the production domain can never validate on 127.0.0.1, which
-            # locks the login form. (Turnstile is not here: its plugin honours
-            # the CF_TURNSTILE_* constants, so the generated wp-config gives
-            # it Cloudflare's always-pass testing keys instead.)
-            "advanced-google-recaptcha"
-            "hcaptcha-for-forms-and-more"
-          ];
-          description = ''
-            Plugin directories that stay inactive in the dev shell, without
-            changing the database: security, anti-spam, remote-management
-            and CAPTCHA plugins have no environment switch of their own and
-            only cost time (and per-request writes) here -- or, for a
-            CAPTCHA bound to the production domain, lock the login form.
-            Applied by the platform's environment mu-plugin whenever
-            WP_ENVIRONMENT_TYPE is not "production"; wp-admin says which
-            ones are held back.
-          '';
-        };
-
-        environmentConstants = mkOption {
-          type = types.listOf (types.strMatching "^[A-Z][A-Z0-9_]*$");
-          default = [
-            "JWT_AUTH_CLIENT_SECRET"
-            "CLOUDFLARE_EMAIL_ACCOUNT_ID"
-            "CLOUDFLARE_EMAIL_API_TOKEN"
-            "S3_KEY"
-            "S3_SECRET"
-          ];
-          description = ''
-            wp-config constants defined from the environment variable of the
-            same name, when it is set: the secrets `configExtra` must not
-            carry. Put them in `.env` (gitignored; the template's `.envrc`
-            loads it with direnv's dotenv_if_exists, and `devenv shell` loads
-            it itself). Unset variables define nothing, so a plugin sees the
-            same "not configured" it would on a fresh install -- the house
-            plugins each have a development posture for that.
-          '';
-        };
-
-        configExtra = mkOption {
-          type = types.lines;
-          default = "";
-          description = ''
-            PHP appended to the generated wp-config.php: the site's own
-            constants. Reuse the string you give the NixOS module's
-            `configExtra`. Secrets should come from the environment
-            (`getenv()`), never from this string.
-          '';
-        };
-
         mailpit.enable = mkOption {
           type = types.bool;
           default = true;
           description = "Catch all outgoing mail in Mailpit (PHP's sendmail_path points at it).";
-        };
-
-        muPlugins = mkOption {
-          type = types.listOf types.path;
-          default = [ ../mu-plugins ];
-          defaultText = lib.literalExpression "[ wordpress-nix/mu-plugins ]";
-          description = "Directories of platform mu-plugins (platform-*.php) copied into wp-content/mu-plugins.";
         };
 
         extraDevPackages = mkOption {
@@ -187,483 +89,305 @@ in
           default = { };
           description = "Extra devenv scripts, merged with wordpress-nix's own.";
         };
-
-        image = {
-          enable = mkOption {
-            type = types.bool;
-            default = true;
-            description = "Expose the site's OCI image as packages.image (and packages.default).";
-          };
-          name = mkOption {
-            type = types.str;
-            default = config.wordpress-nix.siteName;
-            defaultText = lib.literalExpression "config.wordpress-nix.siteName";
-            description = "The image name.";
-          };
-          sqlite = mkOption {
-            type = types.bool;
-            default = true;
-            description = "Bundle the SQLite Anywhere plugin and its native extensions in the image.";
-          };
-        };
       };
     }
   );
 
-  config = {
-    perSystem =
-      { config, pkgs, ... }:
-      let
-        cfg = config.wordpress-nix;
-        sqliteAnywhere = inputs.wordpress-sqlite-anywhere;
-        system = pkgs.stdenv.hostPlatform.system;
+  config.perSystem =
+    { config, pkgs, ... }:
+    let
+      cfg = config.wordpress-nix;
+      base = inputs.python-devops-nix.lib;
 
-        offset = portOffsetFor cfg.siteName;
-        httpPort = if cfg.port != null then cfg.port else 8100 + offset;
-        tursoPort = 9100 + offset;
-        mailpitHttpPort = 10100 + offset;
-        mailpitSmtpPort = 11100 + offset;
+      offset = portOffsetFor cfg.siteName;
+      httpPort = if cfg.port != null then cfg.port else 8100 + offset;
+      mailpitHttpPort = 10100 + offset;
+      mailpitSmtpPort = 11100 + offset;
+      home = "http://127.0.0.1:${toString httpPort}";
 
-        localTurso = cfg.database.type == "turso" && cfg.database.turso.url == null;
-        tursoUrl = if localTurso then "http://127.0.0.1:${toString tursoPort}" else cfg.database.turso.url;
-        remoteSqlite = cfg.database.type != "mysql";
+      # The platform PHP, unoptimised (a dev build should not take a clang/LTO
+      # pass). Mail goes to Mailpit through sendmail_path.
+      php = import ../lib/php.nix {
+        inherit pkgs;
+        php = cfg.php;
+        optimize = false;
+        iniExtra = ''
+          display_errors = Off
+          log_errors = On
+          error_log =
+          ${lib.optionalString cfg.mailpit.enable ''
+            sendmail_path = "${pkgs.mailpit}/bin/mailpit sendmail --smtp-addr 127.0.0.1:${toString mailpitSmtpPort}"
+          ''}
+        '';
+      };
+      composer = php.packages.composer;
+      frankenphp = import ../lib/frankenphp.nix { inherit pkgs php; };
+      wpCli = pkgs.wp-cli.override { inherit php; };
 
-        # The platform PHP, unoptimised (a dev build should not take a clang/LTO
-        # pass) and with pdo_sqlite, which the file engine needs and the
-        # platform build (targeting remote engines) leaves out. Mail goes to
-        # Mailpit through sendmail_path, which WordPress's PHPMailer uses.
-        php = import ../lib/php.nix {
-          inherit pkgs;
-          php = cfg.php;
-          optimize = false;
-          extraExtensions = all: [
-            all.pdo_sqlite
-            all.sqlite3
-          ];
-          iniExtra = ''
-            display_errors = Off
-            log_errors = On
-            ${lib.optionalString cfg.mailpit.enable ''
-              sendmail_path = "${pkgs.mailpit}/bin/mailpit sendmail --smtp-addr 127.0.0.1:${toString mailpitSmtpPort}"
-            ''}
+      caddyfile = pkgs.writeText "Caddyfile" ''
+        {
+          auto_https off
+          admin off
+          frankenphp {
+            num_threads 4
+          }
+          order php_server before file_server
+        }
+        ${home} {
+          root * {$DEVENV_ROOT}/web
+          encode zstd gzip
+          @legacyAdmin path /wp-admin /wp-admin/*
+          redir @legacyAdmin /wp{uri} 301
+          handle /app/uploads/* {
+            @exec path_regexp (?i)\.(ph(p\d?|tml|ar|ps|t)|cgi|pl|py|sh)$
+            respond @exec 403
+            file_server
+          }
+          php_server
+        }
+      '';
+
+      # The development-restore dumps the cluster's backups upload
+      # (<prefix>/wordpress/<slug>/<stamp>.sql.gz). The layout ships with
+      # python-devops-nix; a pin from before it has none.
+      backupFetch =
+        if base.backups ? layouts.wordpress then
+          base.backups.fetch {
+            inherit pkgs;
+            label = "wordpress";
+            envPrefix = "WORDPRESS";
+            layout = base.backups.layouts.wordpress;
+          }
+        else
+          null;
+
+      # Seeds what the checkout needs and Composer does not give it: the
+      # platform mu-plugins, and a .env with fresh salts the first time.
+      assemble = pkgs.writeShellScript "wp-dev-assemble" ''
+        set -euo pipefail
+        cd "$DEVENV_ROOT"
+        mkdir -p web/app/mu-plugins web/app/uploads "$WP_DEV_STATE"
+        ${lib.concatMapStringsSep "\n" (
+          p: "install -m 0644 ${p} web/app/mu-plugins/${baseNameOf (toString p)}"
+        ) platformMuPlugins}
+        if [ ! -e .env ]; then
+          {
+            echo "# Development only: the shell sets WP_ENV, WP_HOME and DB_*."
+            echo "# Add secrets here (S3_KEY, S3_SECRET, ...); this file is gitignored."
+            for key in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
+              printf "%s='%s'\n" "$key" "$(${pkgs.openssl}/bin/openssl rand -base64 48 | tr -d '/+=\n' | head -c 64)"
+            done
+          } > .env
+          echo "wordpress-nix: wrote .env with fresh salts"
+        fi
+        if [ ! -e vendor/autoload.php ] || [ ! -e web/wp/wp-includes/version.php ]; then
+          echo "wordpress-nix: run \`composer install\` to install core, plugins and vendor/"
+        fi
+      '';
+
+      scripts = {
+        wp = {
+          description = "wp-cli against the dev site (`wp restore` restores a backup)";
+          exec = ''
+            if [ "''${1:-}" = restore ]; then
+              shift
+              exec wp-restore "$@"
+            fi
+            exec ${wpCli}/bin/wp --path="$DEVENV_ROOT/web/wp" "$@"
           '';
         };
-        phpExtensions = import ../lib/php-extensions.nix {
-          inherit pkgs php sqliteAnywhere;
-        };
-        phpIniScanDir = "${php}/lib:${phpExtensions.iniDir}";
-        frankenphp = import ../lib/frankenphp.nix { inherit pkgs php; };
-        wpCli = pkgs.wp-cli.override { inherit php; };
-
-        sqlitePlugin = "${
-          sqliteAnywhere.packages.${system}.default
-        }/share/wordpress/plugins/wordpress-sqlite-anywhere";
-        dbDropIn = pkgs.runCommandLocal "wordpress-dev-db-drop-in" { } ''
-          substitute ${sqlitePlugin}/db.copy $out \
-            --replace-fail '{SQLITE_IMPLEMENTATION_FOLDER_PATH}' '${sqlitePlugin}' \
-            --replace-fail '{SQLITE_PLUGIN}' 'wordpress-sqlite-anywhere/wordpress-sqlite-anywhere.php'
-        '';
-
-        # wp-config.php reads everything that varies from the environment, so
-        # it can live in the store next to the core it configures. PHP resolves
-        # __FILE__ through the docroot's symlinks into this store copy, so
-        # ABSPATH is here and the config is found; WP_CONTENT_DIR points back at
-        # the checkout.
-        wpConfig = pkgs.writeText "wp-config.php" ''
-          <?php
-          // Generated by wordpress-nix's devenv module. Do not edit: change the
-          // site flake's `wordpress-nix.configExtra` instead.
-          define('WP_CONTENT_DIR', getenv('WP_CONTENT_DIR'));
-          define('WP_CONTENT_URL', getenv('WP_DEV_URL') . '/wp-content');
-          define('WP_HOME', getenv('WP_DEV_URL'));
-          define('WP_SITEURL', getenv('WP_DEV_URL'));
-
-          ${
-            if cfg.database.type == "mysql" then
+        wp-restore = {
+          description = "Load the site's newest (or --at) dev-restore dump, then neutralize it";
+          exec =
+            if backupFetch == null then
               ''
-                define('DB_NAME', 'wordpress');
-                define('DB_USER', 'wordpress');
-                define('DB_PASSWORD', 'wordpress');
-                define('DB_HOST', 'localhost:' . getenv('MYSQL_UNIX_PORT'));
+                echo "wp restore: this wordpress-nix pins a python-devops-nix without lib.backups.layouts.wordpress" >&2
+                exit 1
               ''
             else
               ''
-                define('DB_ENGINE', '${cfg.database.type}');
-                define('DB_NAME', 'wordpress');
-                define('DB_USER', "");
-                define('DB_PASSWORD', "");
-                define('DB_HOST', 'localhost');
-              ''
-          }
-          define('DB_CHARSET', 'utf8mb4');
-          define('DB_COLLATE', "");
-          ${lib.optionalString (cfg.database.type == "sqlite") ''
-            define('DB_DIR', getenv('WP_DEV_STATE') . '/database/');
-            define('DB_FILE', '.ht.sqlite');
-          ''}
-          ${lib.optionalString (cfg.database.type == "turso") ''
-            define('WP_TURSO_URL', '${tursoUrl}');
-            if (getenv('WP_TURSO_TOKEN')) {
-              define('WP_TURSO_TOKEN', getenv('WP_TURSO_TOKEN'));
-            }
-            // Only the server process sets WP_TURSO_REPLICA (one process per
-            // replica); wp-cli runs primary-only.
-            if (getenv('WP_TURSO_REPLICA')) {
-              define('WP_TURSO_REPLICA', getenv('WP_TURSO_REPLICA'));
-              define('WP_TURSO_REPLICA_PULL_MS', 1000);
-            }
-          ''}
-          $table_prefix = 'wp_';
-
-          require getenv('WP_DEV_STATE') . '/wp-salts.php';
-
-          // The docroot is seeded from the Nix store (see assemble in
-          // devenv.nix) but then owned and written by the dev user like any
-          // other host; forcing 'direct' skips get_filesystem_method()'s
-          // getmyuid()-vs-fileowner() probe entirely rather than depending on
-          // it. Same fix as the NixOS module.
-          define('FS_METHOD', 'direct');
-
-          define('WP_DEBUG', true);
-          define('WP_DEBUG_LOG', getenv('WP_DEV_STATE') . '/debug.log');
-          define('WP_DEBUG_DISPLAY', false);
-          define('SCRIPT_DEBUG', true);
-          define('DISABLE_WP_CRON', true);
-          define('AUTOMATIC_UPDATER_DISABLED', true);
-          define('WP_AUTO_UPDATE_CORE', false);
-          define('WP_ENVIRONMENT_TYPE', 'development');
-          define('WP_PLATFORM_PRODUCTION_ONLY_PLUGINS', '${lib.concatStringsSep "," cfg.productionOnlyPlugins}');
-
-          // Plugins that do have a development posture of their own.
-          // Cloudflare Turnstile's published testing keys: the widget renders
-          // and every challenge passes. Simple Cloudflare Turnstile reads
-          // these constants ahead of its saved keys.
-          define('CF_TURNSTILE_SITE_KEY', '1x00000000000000000000AA');
-          define('CF_TURNSTILE_SECRET_KEY', '1x0000000000000000000000000000000AA');
-          // CleanTalk's localhost posture (spam scans off), for a site that
-          // keeps it out of productionOnlyPlugins.
-          define('APBCT_IS_LOCALHOST', true);
-
-          // --- secrets, from the environment (wordpress-nix.environmentConstants) ---
-          foreach (${
-            "[" + lib.concatMapStringsSep ", " (c: "'${c}'") cfg.environmentConstants + "]"
-          } as $constant) {
-            if (!defined($constant) && getenv($constant) !== false && getenv($constant) !== ''') {
-              define($constant, getenv($constant));
-            }
-          }
-
-          // --- site configuration (wordpress-nix.configExtra) ---
-          ${cfg.configExtra}
-
-          if (!defined('ABSPATH')) {
-            define('ABSPATH', __DIR__ . '/');
-          }
-          require_once ABSPATH . 'wp-settings.php';
-        '';
-
-        # The pinned core, fetched read-only into the store; assemble copies it
-        # into the docroot once (see below) rather than symlinking it in, so
-        # wp-admin and wp-cli can install and update core and plugins like a
-        # normal host would.
-        wordpressCore = import ../lib/wordpress-core.nix { inherit pkgs; };
-
-        caddyfile = pkgs.writeText "Caddyfile" ''
-          {
-            auto_https off
-            admin off
-            frankenphp {
-              num_threads 4
-            }
-            order php_server before file_server
-          }
-          http://127.0.0.1:${toString httpPort} {
-            root * {$WP_DOCROOT}
-            encode zstd gzip
-            php_server
-          }
-        '';
-
-        muPluginDirs = lib.concatMapStringsSep " " toString cfg.muPlugins;
-
-        # Assembles the docroot: the pinned core (seeded once, then left alone
-        # so self-updates persist), wp-content from the checkout, the drop-in
-        # and platform mu-plugins (both gitignored by the site).
-        assemble = pkgs.writeShellScript "wp-dev-assemble" ''
-          set -euo pipefail
-          mkdir -p "$WP_DEV_STATE/database" "$WP_DEV_STATE/turso" "$WP_DOCROOT"
-          # Seed core once, as real writable files owned by the dev user --
-          # not symlinks into the read-only, root-owned Nix store. Once
-          # seeded this is the running site's own state, exactly like a
-          # normal host: wp-admin and wp-cli can update it from here, and
-          # assemble never overwrites it again. wp-core-reset re-pins it
-          # deliberately.
-          if [ ! -e "$WP_DOCROOT/wp-includes/version.php" ]; then
-            cp -rL ${wordpressCore}/. "$WP_DOCROOT/"
-            chmod -R u+w "$WP_DOCROOT"
-            rm -rf "$WP_DOCROOT/wp-content" "$WP_DOCROOT/wp-config-sample.php"
-          fi
-          install -m 0644 ${wpConfig} "$WP_DOCROOT/wp-config.php"
-          ln -sfn "$WP_CONTENT_DIR" "$WP_DOCROOT/wp-content"
-          mkdir -p "$WP_CONTENT_DIR/mu-plugins" "$WP_CONTENT_DIR/uploads"
-          ${lib.optionalString remoteSqlite ''
-            install -m 0644 ${dbDropIn} "$WP_CONTENT_DIR/db.php"
-          ''}
-          ${lib.optionalString (!remoteSqlite) ''
-            rm -f "$WP_CONTENT_DIR/db.php"
-          ''}
-          rm -f "$WP_CONTENT_DIR/mu-plugins"/platform-*.php
-          for dir in ${muPluginDirs}; do
-            cp -rL --no-preserve=mode "$dir"/. "$WP_CONTENT_DIR/mu-plugins/"
-          done
-          if [ ! -s "$WP_DEV_STATE/wp-salts.php" ]; then
-            {
-              echo '<?php'
-              for key in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
-                printf "define('%s', '%s');\n" "$key" "$(${pkgs.openssl}/bin/openssl rand -base64 48 | tr -d '/+=\n' | head -c 64)"
-              done
-            } > "$WP_DEV_STATE/wp-salts.php"
-          fi
-        '';
-
-        # Refuse to start a server on a port something already listens on.
-        # Caddy and tursodb both bind with SO_REUSEPORT, so a second instance
-        # would otherwise start silently and share the port with the first --
-        # two tursodb processes writing one primary.db is how the first site's
-        # local database was corrupted. (`devenv up` cannot stop a detached
-        # instance whose socket file is stale; wp-stop can.)
-        portGuard = pkgs.writeShellScript "wp-dev-port-guard" ''
-          port=$1; what=$2
-          if ${pkgs.iproute2}/bin/ss -ltn 2>/dev/null | ${pkgs.gawk}/bin/awk '{print $4}' | ${pkgs.gnugrep}/bin/grep -q ":$port$"; then
-            echo "$what: port $port is already in use -- an earlier instance is still running. Run wp-stop (or kill it) first." >&2
-            exit 1
-          fi
-        '';
-
-        migrationTools = [
-          (import ../lib/mysql-to-sqlite.nix {
-            inherit pkgs php;
-            driverSrc = "${sqliteAnywhere.packages.${system}.driver}/src";
-            parserExtension = phpExtensions.wp-mysql-parser;
-          })
-          (import ../lib/sqlite-to-turso.nix { inherit pkgs; })
-          (import ../lib/restore-core-keys.nix { inherit pkgs php; })
-        ];
-
-        scripts = {
-          wp = {
-            description = "wp-cli against the dev site (primary-only on Turso)";
-            exec = ''exec ${wpCli}/bin/wp --path="$WP_DOCROOT" --url="$WP_DEV_URL" "$@"'';
-          };
-          wp-import = {
-            description = "Load a MySQL dump (.sql) or a SQLite file into the dev database";
-            exec = ''
-              set -euo pipefail
-              src=''${1:?usage: wp-import <dump.sql | site.sqlite>}
-              case "$src" in
-                *.sql|*.sql.gz)
-                  work=$(mktemp -d)
-                  trap 'rm -rf "$work"' EXIT
-                  dump="$src"
-                  if [[ "$src" == *.gz ]]; then gunzip -c "$src" > "$work/dump.sql"; dump="$work/dump.sql"; fi
-                  restore-core-keys "$dump" "$work/fixed.sql"
-                  mysql-to-sqlite "$work/fixed.sql" "$work/site.sqlite" --continue-on-error
-                  sqlite="$work/site.sqlite"
-                  ;;
-                *)
-                  sqlite="$src"
-                  ;;
-              esac
-              ${
-                if cfg.database.type == "sqlite" then
-                  ''
-                    install -m 0644 "$sqlite" "$WP_DEV_STATE/database/.ht.sqlite"
-                    echo "wp-import: installed $WP_DEV_STATE/database/.ht.sqlite"
-                  ''
-                else if cfg.database.type == "turso" then
-                  ''
-                    TURSO_AUTH_TOKEN="''${WP_TURSO_TOKEN:-}" sqlite-to-turso "$sqlite" "${tursoUrl}" --replace
-                    rm -f "$WP_DEV_STATE/turso/replica.db"*
-                    echo "wp-import: loaded into ${tursoUrl}; wp-stop and start again so the replica re-bootstraps"
-                  ''
-                else
-                  ''
-                    echo "wp-import: database.type = mysql -- restore the dump with the mysql client instead:" >&2
-                    echo "  mysql -S \$MYSQL_UNIX_PORT wordpress < dump.sql" >&2
-                    exit 1
-                  ''
-              }
-            '';
-          };
-          wp-admin-user = {
-            description = "Create (or reset the password of) a local administrator";
-            exec = ''
-              set -euo pipefail
-              user=''${1:-dev}
-              pass=$(${pkgs.openssl}/bin/openssl rand -hex 8)
-              if wp user get "$user" --field=ID > /dev/null 2>&1; then
-                wp user update "$user" --user_pass="$pass" --role=administrator > /dev/null
-              else
-                wp user create "$user" "$user@example.invalid" --role=administrator --user_pass="$pass" > /dev/null
-              fi
-              echo "administrator: $user / $pass  ->  $WP_DEV_URL/wp-login.php"
-            '';
-          };
-          wp-stop = {
-            description = "Stop the processes started by `devenv up -D`";
-            exec = ''
-              sock="$DEVENV_RUNTIME/pc.sock"
-              if [ -S "$sock" ] && ${pkgs.process-compose}/bin/process-compose down -u "$sock" > /dev/null 2>&1; then
-                echo "wp-stop: stopped"
-              else
-                # A dead server leaves its socket behind, and `devenv up` would
-                # then "attach" to it and start nothing.
-                rm -f "$sock"
-                echo "wp-stop: nothing running (stale socket removed, if any)"
-              fi
-            '';
-          };
-          wp-reset = {
-            description = "Delete the dev database and replica (keeps wp-content)";
-            exec = ''
-              rm -rf "$WP_DEV_STATE/database" "$WP_DEV_STATE/turso"
-              mkdir -p "$WP_DEV_STATE/database" "$WP_DEV_STATE/turso"
-              echo "wp-reset: database state removed; run wp-import, or open $WP_DEV_URL to install"
-            '';
-          };
-          wp-core-reset = {
-            description = "Re-seed WordPress core from the platform's pinned version (keeps wp-content and the database)";
-            exec = ''
-              set -euo pipefail
-              # The docroot only holds core plus a symlink back to
-              # $WP_CONTENT_DIR (the real, persistent wp-content); assemble
-              # recreates that symlink unconditionally, so wiping the whole
-              # thing loses nothing.
-              rm -rf "$WP_DOCROOT"
-              ${assemble}
-              echo "wp-core-reset: core reseeded at ${wordpressCore.version}; restart with wp-stop then devenv up"
-            '';
-          };
-        };
-      in
-      lib.mkIf cfg.enable {
-        packages = lib.optionalAttrs cfg.image.enable rec {
-          # The site's container image: the pinned core + this repo's wp-content.
-          image = import ../modules/containers.nix {
-            inherit pkgs;
-            php = cfg.php;
-            imageName = cfg.image.name;
-            wpContent = cfg.siteRoot + "/wp-content";
-            sqliteAnywhere = if cfg.image.sqlite then sqliteAnywhere else null;
-            rustPkgs = inputs.nixpkgs.legacyPackages.${system};
-          };
-          default = image;
-        };
-
-        devenv.shells.default =
-          { config, lib, ... }:
-          {
-            # devenv's dotenv integration asserts against the flake integration
-            # (`nix develop`); keep .env loading for `devenv shell` only.
-            dotenv.enable = lib.mkDefault (!config.devenv.flakesIntegration);
-
-            packages =
-              [
-                php
-                wpCli
-                frankenphp
-                pkgs.sqlite
-                pkgs.gum
-                pkgs.jq
-                pkgs.curl
-                pkgs.git
-              ]
-              ++ migrationTools
-              ++ lib.optional (cfg.database.type == "turso") pkgs.turso
-              ++ lib.optional cfg.mailpit.enable pkgs.mailpit
-              ++ lib.optional (cfg.database.type == "mysql") pkgs.mariadb.client
-              ++ cfg.extraDevPackages;
-
-            env = {
-              WP_DEV_STATE = config.devenv.state + "/wordpress";
-              WP_DOCROOT = config.devenv.state + "/wordpress/www";
-              WP_CONTENT_DIR = config.devenv.root + "/wp-content";
-              WP_DEV_URL = "http://127.0.0.1:${toString httpPort}";
-              PHP_INI_SCAN_DIR = phpIniScanDir;
-            };
-
-            services.mysql = lib.mkIf (cfg.database.type == "mysql") {
-              enable = true;
-              package = pkgs.mariadb;
-              initialDatabases = [ { name = "wordpress"; } ];
-              ensureUsers = [
-                {
-                  name = "wordpress";
-                  password = "wordpress";
-                  ensurePermissions = {
-                    "wordpress.*" = "ALL PRIVILEGES";
-                  };
-                }
-              ];
-            };
-
-            processes = {
-              frankenphp = {
-                exec = ''
-                  ${portGuard} ${toString httpPort} frankenphp
-                  ${assemble}
-                  ${lib.optionalString (cfg.database.type == "turso" && cfg.database.turso.embedded) ''
-                    export WP_TURSO_REPLICA="$WP_DEV_STATE/turso/replica.db"
-                  ''}
-                  cd "$WP_DEV_STATE"
-                  exec ${frankenphp}/bin/frankenphp run --config ${caddyfile} --adapter caddyfile
-                '';
-                after =
-                  lib.optional localTurso "devenv:processes:tursodb@started"
-                  ++ lib.optional (cfg.database.type == "mysql") "devenv:processes:mysql@started";
-              };
-            }
-            // lib.optionalAttrs localTurso {
-              tursodb.exec = ''
-                ${portGuard} ${toString tursoPort} tursodb
-                mkdir -p "$WP_DEV_STATE/turso"
-                exec ${pkgs.turso}/bin/tursodb "$WP_DEV_STATE/turso/primary.db" --sync-server 127.0.0.1:${toString tursoPort}
+                set -euo pipefail
+                at=() neutralize=1
+                while [ "$#" -gt 0 ]; do
+                  case "$1" in
+                    --at) at=(--at "$2"); shift 2 ;;
+                    --no-neutralize) neutralize=0; shift ;;
+                    *) echo "usage: wp restore [--at WHEN] [--no-neutralize]" >&2; exit 2 ;;
+                  esac
+                done
+                manifest=$(${lib.getExe backupFetch} fetch "wordpress/${cfg.siteName}" "''${at[@]}")
+                dump=$(printf '%s' "$manifest" | ${pkgs.jq}/bin/jq -er .database)
+                echo "wp restore: loading $dump"
+                wp db reset --yes
+                ${pkgs.gzip}/bin/gzip -cd "$dump" | wp db import -
+                if [ "$neutralize" = 1 ]; then
+                  prefix=$(wp db prefix)
+                  from=$(wp db query "SELECT option_value FROM ''${prefix}options WHERE option_name = 'home'" --skip-column-names)
+                  if [ -n "$from" ] && [ "$from" != "$WP_HOME" ]; then
+                    wp search-replace "$from" "$WP_HOME" --all-tables-with-prefix --skip-columns=guid --report-changed-only
+                  fi
+                  # No production mail, search engines or remote sessions here.
+                  wp option update blog_public 0
+                  wp db query "DELETE FROM ''${prefix}usermeta WHERE meta_key IN ('session_tokens', '_application_passwords')"
+                fi
+                wp cache flush
+                echo "wp restore: done; wp-admin-user creates a local administrator"
               '';
-            }
-            // lib.optionalAttrs cfg.mailpit.enable {
-              mailpit.exec = ''
-                exec ${pkgs.mailpit}/bin/mailpit \
-                  --smtp 127.0.0.1:${toString mailpitSmtpPort} \
-                  --listen 127.0.0.1:${toString mailpitHttpPort} \
-                  --database "$DEVENV_STATE/mailpit.db"
-              '';
-            };
-
-            enterShell = ''
-              ${assemble}
-              echo ""
-              echo "  ${cfg.siteName} — WordPress on ${cfg.database.type}, seeded from core ${wordpressCore.version}  (wordpress-nix)"
-              echo "  devenv up        start ${
-                lib.concatStringsSep " + " (
-                  [ "frankenphp" ]
-                  ++ lib.optional localTurso "tursodb"
-                  ++ lib.optional (cfg.database.type == "mysql") "mariadb"
-                  ++ lib.optional cfg.mailpit.enable "mailpit"
-                )
-              }  →  $WP_DEV_URL"
-              echo "  devenv up -D     the same, detached; wp-stop stops it"
-              echo "  wp-import        load a MySQL dump or SQLite file"
-              echo "  wp-admin-user    create a local administrator"
-              echo "  wp-core-reset    re-seed core from the pinned version"
-              echo "  wp               wp-cli against the dev site"
-              ${lib.optionalString cfg.mailpit.enable ''
-                echo "  mail             all outgoing mail → http://127.0.0.1:${toString mailpitHttpPort}"
-              ''}
-              echo ""
-            '';
-
-            scripts = scripts // cfg.extraScripts;
-          };
+        };
+        wp-admin-user = {
+          description = "Create (or reset the password of) a local administrator";
+          exec = ''
+            set -euo pipefail
+            user=''${1:-dev}
+            pass=$(${pkgs.openssl}/bin/openssl rand -hex 8)
+            if wp user get "$user" --field=ID > /dev/null 2>&1; then
+              wp user update "$user" --user_pass="$pass" --role=administrator > /dev/null
+            else
+              wp user create "$user" "$user@example.invalid" --role=administrator --user_pass="$pass" > /dev/null
+            fi
+            echo "administrator: $user / $pass  ->  $WP_HOME/wp/wp-login.php"
+          '';
+        };
+        wp-reset = {
+          description = "Empty the dev database (keeps the checkout)";
+          exec = ''
+            wp db reset --yes
+            echo "wp-reset: database emptied; wp restore, or open $WP_HOME to install"
+          '';
+        };
+        wp-stop = {
+          description = "Stop the processes started by `devenv up -D`";
+          exec = ''
+            sock="$DEVENV_RUNTIME/pc.sock"
+            if [ -S "$sock" ] && ${pkgs.process-compose}/bin/process-compose down -u "$sock" > /dev/null 2>&1; then
+              echo "wp-stop: stopped"
+            else
+              rm -f "$sock"
+              echo "wp-stop: nothing running (stale socket removed, if any)"
+            fi
+          '';
+        };
+        relock = {
+          description = "Rewrite nix/vendor-hash after a composer.lock change";
+          exec = ''exec nix run "$DEVENV_ROOT#relock" -- "$@"'';
+        };
+        verify-checksums = {
+          description = "Compare the built site with wordpress.org's published files (network)";
+          exec = ''exec nix run "$DEVENV_ROOT#verify-wp-checksums" -- "$@"'';
+        };
+        wpcodebox-export = {
+          description = "Commit WPCodeBox's functionality plugin (production runs it as code)";
+          exec = ''
+            set -euo pipefail
+            cd "$DEVENV_ROOT"
+            dir=web/app/plugins/wpcodebox_functionality_plugin
+            if [ ! -f "$dir/plugin.php" ]; then
+              echo "wpcodebox-export: no $dir; turn on WPCodeBox's functionality plugin mode and save a snippet" >&2
+              exit 1
+            fi
+            # Whitelisted in the managed block, so git sees it.
+            if ! grep -qxF "!/$dir" .gitignore && ! grep -qxF "!$dir" .gitignore; then
+              sed -i "/^# END wordpress-nix/i !$dir" .gitignore
+            fi
+            git add .gitignore "$dir"
+            echo "wpcodebox-export: $dir staged; commit it, and production runs the snippets as code"
+          '';
+        };
       };
-  };
+    in
+    lib.mkIf cfg.enable {
+      devenv.shells.default =
+        { config, lib, ... }:
+        {
+          # No OCI images of the dev shell: production is the NixOS module, and
+          # devenv's container outputs need nix2container and mk-shell-bin as
+          # flake inputs, failing `nix flake check` without them.
+          containers = lib.mkForce { };
+
+          packages = [
+            php
+            composer
+            wpCli
+            frankenphp
+            pkgs.mariadb.client
+            pkgs.jq
+            pkgs.curl
+            pkgs.git
+          ]
+          ++ lib.optional cfg.mailpit.enable pkgs.mailpit
+          ++ cfg.extraDevPackages;
+
+          env = {
+            WP_DEV_STATE = config.devenv.state + "/wordpress";
+            PHP_INI_SCAN_DIR = "${php}/lib";
+            WP_ENV = "development";
+            WP_HOME = home;
+            WP_SITEURL = "${home}/wp";
+            DB_NAME = "wordpress";
+            DB_USER = "wordpress";
+            DB_PASSWORD = "wordpress";
+            DB_HOST = "localhost:${config.env.MYSQL_UNIX_PORT}";
+            WORDPRESS_NIX_PRODUCTION_ONLY_PLUGINS = lib.concatStringsSep "," (
+              if site != null then site.productionOnlyPlugins else [ ]
+            );
+            WORDPRESS_NIX_DEVELOPMENT_ONLY_PLUGINS = lib.concatStringsSep "," (
+              if site != null then site.developmentOnlyPlugins else [ ]
+            );
+          }
+          // lib.optionalAttrs cfg.mailpit.enable {
+            WORDPRESS_NIX_MAIL_CATCHER = "true";
+          };
+
+          services.mysql = {
+            enable = true;
+            package = pkgs.mariadb;
+            initialDatabases = [ { name = "wordpress"; } ];
+            ensureUsers = [
+              {
+                name = "wordpress";
+                password = "wordpress";
+                ensurePermissions = {
+                  "wordpress.*" = "ALL PRIVILEGES";
+                };
+              }
+            ];
+          };
+
+          processes = {
+            frankenphp = {
+              exec = ''
+                ${assemble}
+                cd "$WP_DEV_STATE"
+                exec ${frankenphp}/bin/frankenphp run --config ${caddyfile} --adapter caddyfile
+              '';
+              after = [ "devenv:processes:mysql@started" ];
+            };
+          }
+          // lib.optionalAttrs cfg.mailpit.enable {
+            mailpit.exec = ''
+              exec ${pkgs.mailpit}/bin/mailpit \
+                --smtp 127.0.0.1:${toString mailpitSmtpPort} \
+                --listen 127.0.0.1:${toString mailpitHttpPort} \
+                --database "$DEVENV_STATE/mailpit.db"
+            '';
+          };
+
+          enterShell = ''
+            ${assemble}
+            echo ""
+            echo "  ${cfg.siteName}: Bedrock on wordpress-nix (WP_ENV=development)"
+            echo "  composer install   core, plugins and vendor/ into the tree"
+            echo "  devenv up          frankenphp + mariadb${lib.optionalString cfg.mailpit.enable " + mailpit"}  ->  ${home}"
+            echo "  wp restore         the newest dev-restore dump (--at, --no-neutralize)"
+            echo "  wp-admin-user      a local administrator"
+            echo "  relock             nix/vendor-hash after a composer.lock change"
+            ${lib.optionalString cfg.mailpit.enable ''
+              echo "  mail               all outgoing mail -> http://127.0.0.1:${toString mailpitHttpPort}"
+            ''}
+            echo ""
+          '';
+
+          scripts = scripts // cfg.extraScripts;
+        };
+    };
 }

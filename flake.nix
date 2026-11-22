@@ -1,5 +1,5 @@
 {
-  description = "WordPress FrankenPHP — OCI images and a NixOS module (customizable PHP; state or git source)";
+  description = "WordPress on Nix: stock Bedrock sites built from composer.lock and served read-only by FrankenPHP";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -10,30 +10,29 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     devenv.url = "github:cachix/devenv";
 
-    # WordPress SQLite Anywhere: the SQLite Database Integration driver with
-    # the Turso backend, as one plugin with one db.php
-    # drop-in. The driver is a git submodule of that repo, hence the git URL
-    # with submodules=1 (a GitHub tarball would not carry it).
-    wordpress-sqlite-anywhere = {
-      url = "git+https://github.com/Avunu/wordpress-sqlite-anywhere?ref=main&submodules=1";
-      inputs.nixpkgs.follows = "nixpkgs";
+    # Stock Roots Bedrock, the layout every v3 site repository is: the
+    # template (templates/bedrock-site) carries its files unedited, and the
+    # `bedrock-template` check holds them to this tag. Dependabot's nix
+    # ecosystem bumps it here, and nowhere else.
+    bedrock = {
+      url = "github:roots/bedrock/1.31.9";
+      flake = false;
     };
 
-    # gitium, which commits wp-admin's filesystem changes and pushes them to the
-    # site's git remote. It is platform infrastructure rather than site payload:
-    # the admin plane installs it from here and platform-admin-plane.php
-    # activates it through a filter, so the site repo never carries it, never
-    # commits it, and cannot drift from the platform's version.
-    gitium = {
-      url = "github:presslabs/gitium/1.2.6";
-      flake = false;
+    # Shared building blocks with frappe-nix and odoo-nix: lib.checks.mk names
+    # and builds the checks. Its own inputs are nixpkgs and flake-parts, both
+    # followed, so it adds one node to the lock.
+    python-devops-nix = {
+      url = "github:Avunu/python-devops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
     };
   };
 
   # Nix honours this for a trusted user who accepts it (a prompt the first time, or
   # `--accept-flake-config`); everyone else gets a warning and a local build. The wordpress-nix
   # cache holds the optimized PHP builds and the native extensions, which cache.nixos.org lacks.
-  # Same key as modules/nixos.nix and templates/site/flake.nix; keep them equal.
+  # Same key as modules/nixos.nix and templates/bedrock-site/flake.nix; keep them equal.
   nixConfig = {
     extra-substituters = [
       "https://devenv.cachix.org"
@@ -51,29 +50,27 @@
       nixpkgs,
       flake-utils,
       flake-parts,
-      wordpress-sqlite-anywhere,
-      gitium,
+      bedrock,
+      python-devops-nix,
       ...
     }:
     {
-      # The site dev shell + image, as a flake-parts module. See templates/site.
-      flakeModules.default = ./modules/flake-module.nix;
+      # A site flake's outputs, as a flake-parts module: the Bedrock build
+      # (wordpress-nix.site, modules/site.nix; templates/bedrock-site) and the
+      # dev shell (modules/devenv.nix). Applied to this flake, so the module
+      # reaches wordpress-nix's own lib and packages.
+      flakeModules.default = nixpkgs.lib.modules.importApply ./modules/flake-module.nix self;
 
-      # Deploy WordPress directly on NixOS. See readme.md for usage.
-      # The flake wiring injects the SQLite plugin flake + Rust toolchain pin,
-      # enabling `database.type = "turso"` and the managed backend mode.
-      nixosModules.default = import ./modules/nixos.nix {
-        sqliteAnywhere = wordpress-sqlite-anywhere;
-        rustNixpkgs = nixpkgs;
-        # The repo root holds the plugin in a gitium/ subdirectory.
-        gitiumSrc = "${gitium}/gitium";
-      };
+      # One Bedrock site on NixOS, served read-only (docs/reference/nixos-module.md).
+      # It takes python-devops-nix's lib: the unit hardening, the migrate flow,
+      # the socket directory and the journald fields.
+      nixosModules.default = import ./modules/nixos.nix { base = python-devops-nix.lib; };
       nixosModules.wordpress-nix = self.nixosModules.default;
 
       # Composable builders, reused by the container build and available to consumers.
       lib = {
         # flake-parts entry point for site flakes: wordpress-nix's own inputs
-        # (nixpkgs, devenv, the plugin flake) are merged under the site's, so
+        # (nixpkgs, devenv, python-devops-nix) are merged under the site's, so
         # a site declares only wordpress-nix.
         #   outputs = { self, wordpress-nix, ... }@inputs:
         #     wordpress-nix.lib.mkFlake { inherit inputs; } ({ ... }: { imports = [ wordpress-nix.flakeModules.default ]; ... });
@@ -89,195 +86,140 @@
 
         mkPhp = import ./lib/php.nix; # { pkgs, php ? pkgs.php83, optimize ? true, ... }
         mkFrankenphp = import ./lib/frankenphp.nix; # { pkgs, php }
-        mkWordPressSite = import ./lib/site.nix; # { pkgs, src, php ? ..., plugins ? {}, themes ? {} }
 
-        # The immutable document root a read-only public plane serves: the
-        # pinned core, the site's wp-content and the platform mu-plugins,
-        # composed at build time. Pair with source.type = "git".
-        #   mkSiteDocroot { inherit pkgs; wpContent = "${siteRepo}/wp-content"; }
-        mkSiteDocroot = import ./lib/mk-site-docroot.nix;
-
-        # Per-site OCI image: the pinned core + the site repo's wp-content,
-        # with the SQLite Anywhere driver stack included by default. The primary
-        # builder for site flakes; this flake's own package variants use it too.
-        # The SQLite plugin requires PHP 8.5, hence the default.
-        #   mkSiteImage { inherit pkgs; imageName = "site-foo"; wpContent = ./wp-content; }
-        mkSiteImage =
-          {
-            pkgs,
-            php ? pkgs.php85,
-            imageName,
-            tag ? "latest",
-            wpContent ? null,
-            plugins ? { },
-            themes ? { },
-            sqlite ? true,
-            wordpressVersion ? null,
-            wordpressHash ? null,
-          }:
-          import ./modules/containers.nix {
-            inherit
-              pkgs
-              php
-              imageName
-              tag
-              wpContent
-              plugins
-              themes
-              wordpressVersion
-              wordpressHash
-              ;
-            sqliteAnywhere = if sqlite then wordpress-sqlite-anywhere else null;
-            rustPkgs = nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system};
-          };
-
-        # The Turso snapshot publisher, from the pinned plugin flake.
-        #   mkTursoPublisher { inherit pkgs; }
-        mkTursoPublisher =
-          { pkgs, rustPkgs ? pkgs }:
-          wordpress-sqlite-anywhere.lib.mkTursoPublisher { inherit pkgs rustPkgs; };
+        # A stock Bedrock site: php.mkComposerVendor (the FOD, hash in
+        # nix/vendor-hash) into php.buildComposerProject2. The package is the
+        # read-only tree production serves from ${package}/web.
+        #   mkBedrockSite { inherit pkgs; name = "mysite"; src = ./.; php = pkgs.php84; }
+        mkBedrockSite = import ./lib/mk-bedrock-site.nix;
       };
 
-      # `nix flake init -t github:Avunu/wordpress-nix#site` scaffolds a new
-      # thin site repo (payload + identity + pins only). `nix run
-      # github:Avunu/wordpress-nix` does the same and more: it also adopts an
-      # existing WordPress install in place (see lib/init.nix).
-      templates.site = {
-        path = ./templates/site;
-        description = "A WordPress site: wp-content payload, flake pin, CI caller";
+      # `nix flake init -t github:Avunu/wordpress` scaffolds a v3 site: stock
+      # Bedrock (held to the `bedrock` input by the bedrock-template check),
+      # the composer.json delta, a thin flake on wordpress-nix.site, and the
+      # managed Dependabot file. Then `composer update && nix run .#relock`.
+      templates.default = {
+        path = ./templates/bedrock-site;
+        description = "A WordPress site: stock Roots Bedrock, Composer-built and served read-only by wordpress-nix";
       };
+
     }
     // flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        mkImage =
-          php: imageName:
-          self.lib.mkSiteImage {
-            inherit pkgs php imageName;
-            sqlite = false;
-          };
       in
       {
-        # `nix run github:Avunu/wordpress-nix` bootstraps the current directory
-        # as a wordpress-nix site. (`packages.default` stays the PHP 8.3 image:
-        # `nix build` is still how that is built.)
-        apps =
+        packages =
           let
-            app = {
-              type = "app";
-              program = "${self.packages.${system}.wordpress-init}/bin/wordpress-init";
-              meta.description = "Bootstrap a wordpress-nix site: scaffold, adopt an existing WordPress install, or reconcile";
-            };
+            # FrankenPHP on the optimized PHP, as nixosModules.default builds it
+            # (the per-site ini is a separate scan directory): what the binary
+            # cache serves (.github/workflows/cache.yml).
+            frankenphp =
+              php:
+              import ./lib/frankenphp.nix {
+                inherit pkgs;
+                php = import ./lib/php.nix { inherit pkgs php; };
+              };
           in
           {
-            default = app;
-            wordpress-init = app;
-          };
-
-        packages = {
-          # The bootstrapper behind `nix run`.
-          wordpress-init = import ./lib/init.nix { inherit pkgs; };
-          wordpress-php83 = mkImage pkgs.php83 "wordpress-php83";
-          wordpress-php84 = mkImage pkgs.php84 "wordpress-php84";
-          wordpress-php85 = mkImage pkgs.php85 "wordpress-php85";
-          # Migration: replay a MySQL dump through the driver into SQLite.
-          mysql-to-sqlite =
-            let
-              # A plain build: this runs once per migration on an operator's
-              # machine, so skip the slow clang/LTO pass. pdo_sqlite is not in
-              # the platform extension set (the runtime targets Turso).
-              php = import ./lib/php.nix {
-                inherit pkgs;
-                php = pkgs.php85;
-                optimize = false;
-                extraExtensions = all: [ all.pdo_sqlite ];
-              };
-            in
-            import ./lib/mysql-to-sqlite.nix {
-              inherit pkgs php;
-              # The assembled driver package (upstream + the plugin's patches).
-              driverSrc = "${wordpress-sqlite-anywhere.packages.${system}.driver}/src";
-              # The same Rust parser the site runs on.
-              parserExtension = wordpress-sqlite-anywhere.lib.mkMysqlParserExtension {
-                inherit pkgs php;
-                rustPkgs = nixpkgs.legacyPackages.${system};
-              };
+            frankenphp-php83 = frankenphp pkgs.php83;
+            frankenphp-php84 = frankenphp pkgs.php84;
+            frankenphp-php85 = frankenphp pkgs.php85;
+          }
+          // {
+            # Migration, step zero when a plugin rewrote the core tables' keys.
+            restore-core-keys = import ./lib/restore-core-keys.nix {
+              inherit pkgs;
+              php = pkgs.php84;
             };
-          # Migration, step zero when a plugin rewrote the core tables' keys.
-          restore-core-keys = import ./lib/restore-core-keys.nix {
-            inherit pkgs;
-            php = pkgs.php85;
+            # The migration's gate on an untrusted dump: refuse, or strip, the
+            # objects that would EXECUTE on the new server once restored.
+            audit-mysql-dump = import ./lib/audit-mysql-dump.nix { inherit pkgs; };
+            # A built Bedrock tree against wordpress.org's published checksums
+            # (core, wp-plugin/*) and locked zips (wp-theme/*). Needs the network.
+            verify-wp-checksums = import ./lib/verify-wp-checksums.nix { inherit pkgs; };
           };
-          # The migration's gate on an untrusted dump: refuse, or strip, the
-          # objects that would EXECUTE on the new server once restored.
-          audit-mysql-dump = import ./lib/audit-mysql-dump.nix { inherit pkgs; };
-          # Migration, step two: load the SQLite file into a Turso database.
-          sqlite-to-turso = import ./lib/sqlite-to-turso.nix { inherit pkgs; };
-          # The Turso snapshot publisher: the front end's read path. A live Turso
-          # replica cannot be read by pdo_sqlite, so this hands PHP a plain
-          # SQLite file instead. See the package's README.
-          turso-snapshot-publisher = self.lib.mkTursoPublisher { inherit pkgs; };
-          default = self.packages.${system}.wordpress-php83;
-        };
 
-        # Toolchain for site repos and platform development: `nix develop`.
+        # Toolchain for platform development: `nix develop`.
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            nodejs_22
-            gum
-            skopeo
+          packages = [
+            pkgs.php84
+            pkgs.php84.packages.composer
           ];
         };
       }
       // {
         # NOTE: one `checks` attrset — `//` is shallow, so a second
         # `// { checks.x = ...; }` would drop the earlier checks entirely.
-        checks = {
-          # Converter round-trip: data + MySQL type metadata fidelity.
-          mysql-to-sqlite = import ./tools/test/mysql-to-sqlite-test.nix {
-            inherit pkgs;
-            converter = self.packages.${system}.mysql-to-sqlite;
+        checks =
+          let
+            # The v3 checks are registered through python-devops-nix's helper,
+            # which names each wordpress-nix-<x>-check.
+            mk = python-devops-nix.lib.checks.mk {
+              inherit pkgs;
+              product = "wordpress-nix";
+            };
+            # Stock Bedrock over a local Composer artifact repository: the
+            # offline fixture both Bedrock suites build.
+            fixtureSite = self.lib.mkBedrockSite {
+              inherit pkgs;
+              name = "bedrock-fixture";
+              src = ./tests/fixtures/bedrock-site;
+              php = pkgs.php84;
+              composerRepositoryPaths = [ "artifacts" ];
+              productionOnlyPlugins = [ "fixture-plugin" ];
+              activeTheme = "fixture-theme";
+            };
+            bedrockBuild = import ./tests/bedrock-build.nix {
+              inherit pkgs;
+              checks = mk;
+              site = fixtureSite;
+            };
+          in
+          bedrockBuild
+          // {
+            # The template and the fixture are stock Bedrock, held to the input.
+            bedrock-template = import ./tests/bedrock-template.nix {
+              inherit pkgs bedrock;
+              checks = mk;
+            };
+            # Tampered and extra PHP files fail, against a local stand-in for
+            # wordpress.org serving the fixture's checksums.
+            verify-wp-checksums = import ./tests/verify-wp-checksums.nix {
+              inherit pkgs;
+              checks = mk;
+              site = fixtureSite;
+              verifier = self.packages.${system}.verify-wp-checksums;
+            };
+            # Key restoration on a plugin-mangled dump.
+            restore-core-keys = import ./tools/test/restore-core-keys-test.nix {
+              inherit pkgs;
+              restoreCoreKeys = self.packages.${system}.restore-core-keys;
+            };
+            # An untrusted dump is refused, reported, and stripped clean.
+            audit-mysql-dump = import ./tools/test/audit-mysql-dump-test.nix {
+              inherit pkgs;
+              auditor = self.packages.${system}.audit-mysql-dump;
+            };
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            # The journald fields and the Caddyfile, evaluated and adapted (no VM).
+            logging = import ./tests/logging.nix {
+              inherit pkgs;
+              inherit (nixpkgs.lib) nixosSystem;
+              wordpressModule = self.nixosModules.default;
+              site = fixtureSite;
+            };
+            # `nix build .#checks.<system>.module` runs the NixOS VM test (needs
+            # KVM). The template's site, whose vendor FOD fetches from Composer's
+            # registries (allowed to a fixed-output derivation).
+            module = import ./tests/module.nix {
+              inherit pkgs;
+              wordpressModule = self.nixosModules.default;
+              mkBedrockSite = self.lib.mkBedrockSite;
+            };
           };
-          # Key restoration on a plugin-mangled dump, then conversion.
-          restore-core-keys = import ./tools/test/restore-core-keys-test.nix {
-            inherit pkgs;
-            restoreCoreKeys = self.packages.${system}.restore-core-keys;
-            converter = self.packages.${system}.mysql-to-sqlite;
-          };
-          # An untrusted dump is refused, reported, and stripped clean.
-          audit-mysql-dump = import ./tools/test/audit-mysql-dump-test.nix {
-            inherit pkgs;
-            auditor = self.packages.${system}.audit-mysql-dump;
-          };
-          # Loader round-trip against a local tursodb sync server.
-          sqlite-to-turso = import ./tools/test/sqlite-to-turso-test.nix {
-            inherit pkgs;
-            converter = self.packages.${system}.mysql-to-sqlite;
-            loader = self.packages.${system}.sqlite-to-turso;
-          };
-        }
-        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          # The bootstrapper: fresh, adopted, re-run and guarded directories.
-          wordpress-init = import ./tests/init.nix { inherit pkgs; };
-          # The journald/access-log contract, evaluated and adapted (no VM).
-          logging = import ./tests/logging.nix {
-            inherit pkgs;
-            inherit (nixpkgs.lib) nixosSystem;
-            wordpressModule = self.nixosModules.default;
-          };
-          # The split-plane posture: Caddy matchers and wp-config constants.
-          plane = import ./tests/plane.nix {
-            inherit pkgs;
-            inherit (nixpkgs.lib) nixosSystem;
-            wordpressModule = self.nixosModules.default;
-          };
-          # `nix build .#checks.<system>.module` runs the NixOS VM test (needs KVM).
-          module = import ./tests/module.nix {
-            inherit pkgs;
-            wordpressModule = self.nixosModules.default;
-          };
-        };
       }
     );
 }

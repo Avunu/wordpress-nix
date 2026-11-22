@@ -16,13 +16,13 @@ name: Dependabot auto-merge
 #
 # The org's GitHub App (the variable AVUNU_CI_APP_ID, or a Dependabot secret of that name,
 # and the secret AVUNU_CI_PRIVATE_KEY) enables auto-merge and updates the branches, so a
-# merge raises a push that starts oci.yml on `main` (which publishes the images), and an
-# updated branch starts its build. Without it, GITHUB_TOKEN, and oci.yml is dispatched on
+# merge raises a push that starts the `main` workflows (cache.yml publishes the cache), and
+# an updated branch starts its checks. Without it, GITHUB_TOKEN, and check.yml is dispatched on
 # an updated branch.
 #
 # Requires (one-time, in repo settings):
 #   • Settings → General → Pull Requests → "Allow auto-merge"
-#   • Settings → Rules → ruleset on `main` requiring the "build" (oci) check
+#   • Settings → Rules → ruleset on `main` requiring the check.yml jobs ("flake", "vm-tests")
 on:
   pull_request:
   push:
@@ -51,10 +51,10 @@ jobs:
     permissions:
       contents: write # update-branch without the App
       pull-requests: write # update-branch
-      actions: write # without the App, dispatch oci.yml on the new head
+      actions: write # without the App, dispatch check.yml on the new head
     uses: Avunu/gitops/.github/workflows/dependabot-update-branches.yml@81c8a8dbb2dee20ab5defab9a4ff9936dba1541d # v1.0.0
     with:
-      dispatch: oci.yml
+      dispatch: check.yml
     secrets:
       APP_ID: ${{ vars.AVUNU_CI_APP_ID }}
       APP_PRIVATE_KEY: ${{ secrets.AVUNU_CI_PRIVATE_KEY }}

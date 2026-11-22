@@ -1,51 +1,42 @@
-# NixOS module: deploy a single WordPress instance served by FrankenPHP
-# (standalone — Caddy terminates TLS itself via ACME; no nginx in front).
+# NixOS module: one Bedrock WordPress site (lib.mkBedrockSite), served
+# read-only by FrankenPHP, with its MariaDB, its migrate-on-deploy and its cron.
 #
-# Set `socketPath` instead of `domain` to serve over a unix socket with no TCP
-# listener at all, for a co-located reverse proxy or tunnel connector that
-# terminates TLS elsewhere.
+#   services.wordpress-nix = {
+#     enable = true;
+#     package = inputs.site-acme.packages.x86_64-linux.default;
+#     socketPath = "/run/wordpress/wp.sock";        # or domain + acmeEmail
+#     environmentFiles = [ "/run/secrets/env" ];    # the salts, S3_KEY, ...
+#     settings.WP_HOME = "https://acme.example";
+#   };
 #
-# Three source modes:
-#   * state   — WordPress core lives in a writable ${stateDir}/www, downloaded on
-#               first boot with wp-cli; fully mutable (admin manages core / plugins
-#               / themes via the UI). Best for flexible, server-specific instances.
-#   * git     — source.path (a flake input / store path) is the read-only document
-#               root; ${stateDir}/www is a writable symlink farm into it with the
-#               uploads/cache/upgrade dirs kept real. Sets DISALLOW_FILE_MODS.
-#               The generated wp-config.php is composed INTO a store copy of that
-#               tree (gitCore), because PHP resolves the farm's symlinks and
-#               ABSPATH lands in the store. lib/mk-site-docroot.nix builds the
-#               tree to point here; this is the read-only public plane's mode.
-#   * managed — the split-plane admin backend: core is symlinked from a PINNED
-#               store docroot (lib/wordpress-core.nix — never self-updates), while
-#               wp-content is fully mutable and seeded from the site's git repo
-#               (source.siteRepo), so wp-admin file mods work and gitium can
-#               version them. Pair with database.type = "turso" to share the public
-#               frontend's database.
+# The document root is ${package}/web, an immutable store path: Bedrock's own
+# DISALLOW_FILE_MODS, and nothing under it is writable by anything. What the
+# site writes goes to one of three places, and nowhere else:
 #
-# Two database modes:
-#   * mysql — local MariaDB (createLocally) or external, as before.
-#   * turso — a Turso database over SQL-over-HTTP (database.turso.*). Requires
-#             consuming this module via the flake's nixosModules (which injects
-#             the driver source).
+#   uploadsDir   (/var/lib/wordpress/uploads)  what plugins write that is not an
+#                attachment (builder CSS, fonts, form uploads, private
+#                downloads); web/app/uploads links here. Caddy serves it with
+#                file_server only, never PHP, and refuses the private prefixes
+#                (denyUploadPaths)
+#   stateDir     (/var/lib/wordpress)  Caddy's data, HOME, wp-cli's cache, the
+#                migrate snapshots; never served
+#   /tmp         each unit's own PrivateTmp (TMPDIR, get_temp_dir())
 #
-# The PHP version is the `php` option; the module wraps it with the same
-# optimized ZTS build (lib/php.nix) + FrankenPHP (lib/frankenphp.nix) used by the
-# OCI images.
+# Bedrock reads its configuration from ${package}/.env, a link to
+# /run/wordpress/bedrock.env, which wordpress-init writes (0400) from
+# `settings` (non-secret, in the store) and `environmentFiles` (secrets, never
+# in the store). config/application.php is never edited.
 #
-# Outer layer: the flake injects the wordpress-sqlite-anywhere flake and the
-# Rust nixpkgs for the native extensions; both default to null so importing the
-# file directly still works for mysql-only deployments.
-{
-  # The wordpress-sqlite-anywhere flake, which builds the turso backend:
-  # its packages.default is the plugin, its lib builds the native pieces.
-  sqliteAnywhere ? null,
-  rustNixpkgs ? null,
-  # The gitium plugin directory. Platform infrastructure rather than site
-  # payload: managed mode installs it, so a site repo never carries or commits
-  # it and cannot drift from the platform's pin.
-  gitiumSrc ? null,
-}:
+# Units: wordpress-init, mysql (database.createLocally), wordpress-migrate
+# (python-devops-nix's migrate flow: `wp core update-db` behind a verified
+# snapshot, after an is-installed check), frankenphp, the wordpress-cron
+# timer, and wordpress-env.path (a secret rewritten in place restarts
+# wordpress-init, and through Requires= frankenphp and migrate). Each defines its own PrivateTmp, and all but mysql run under
+# python-devops-nix's sandboxing baseline (lib.nixos.hardening) with the `jit`
+# profile: opcache's JIT and PCRE's both map W+X memory.
+#
+# Outer layer: the flake passes python-devops-nix's lib as `base`.
+{ base }:
 {
   config,
   lib,
@@ -57,311 +48,175 @@ let
     mkOption
     mkEnableOption
     mkIf
-    mkMerge
+    mkDefault
+    mkRemovedOptionModule
     types
     optional
     optionalString
+    concatStringsSep
     concatMapStringsSep
     getExe
     ;
 
   cfg = config.services.wordpress-nix;
 
-  managed = cfg.source.type == "managed";
-  gitMode = cfg.source.type == "git";
+  # What lib.mkBedrockSite records about the package.
+  site = cfg.package.passthru.wordpressNix or { };
 
-  # Split-plane roles. The public plane serves the site read-only on its real
-  # hostname and never serves an administration surface; the admin plane serves
-  # the full wp-admin on a private hostname behind an identity proxy. Both read
-  # and write one shared database.
-  publicPlane = cfg.plane.role == "public";
-  adminPlane = cfg.plane.role == "admin";
+  # §7.2 of the v3 plan: sized so threads × memory_limit + the InnoDB pool +
+  # 384 MiB fits the container's reservation (the cluster kind's memoryMB).
+  profiles = {
+    brochure = {
+      threads = 3;
+      memoryLimit = "192M";
+      maxMemoryLimit = "384M";
+      innodbBufferPool = "256M";
+    };
+    woocommerce = {
+      threads = 4;
+      memoryLimit = "384M";
+      maxMemoryLimit = "768M";
+      innodbBufferPool = "384M";
+    };
+  };
+  profile = profiles.${cfg.profile};
 
-  # WP_SITEURL is where WordPress itself lives (wp-admin, wp-login); WP_HOME is
-  # where the site is. Splitting them on the admin plane is what keeps generated
-  # permalinks and outgoing email pointing at the real site while wp-admin stays
-  # on the private hostname -- core supports the pair natively, and
-  # platform-admin-plane.php repairs the one link that assumes they match
-  # (post preview).
-  planeUrls =
-    if publicPlane then
+  viaSocket = cfg.socketPath != "";
+  dbLocal = cfg.database.createLocally;
+  runtimeDir = "/run/wordpress";
+  envFile = "${runtimeDir}/bedrock.env";
+  docroot = "${cfg.package}/web";
+  wpPath = "${docroot}/wp";
+
+  sockets = base.nixos.unixSocket {
+    inherit (cfg) user group;
+    sockets = [
       {
-        home = cfg.plane.publicUrl;
-        siteurl = cfg.plane.publicUrl;
+        option = "services.wordpress-nix.socketPath";
+        path = cfg.socketPath;
+        example = "/run/wordpress/wp.sock";
       }
-    else if adminPlane then
-      {
-        home = if cfg.plane.publicUrl != "" then cfg.plane.publicUrl else cfg.plane.adminUrl;
-        siteurl = cfg.plane.adminUrl;
-      }
-    else if cfg.domain != "" then
-      {
-        home = "https://${cfg.domain}";
-        siteurl = "https://${cfg.domain}";
-      }
-    else
-      {
-        home = "";
-        siteurl = "";
-      };
+    ];
+  };
 
-  turso = cfg.database.type == "turso";
-  # The remote backend runs the MySQL-on-SQLite driver rather than MySQL.
-  remoteSqlite = turso;
+  # Behind a unix socket there is no peer address and no TLS: the only client
+  # is the tunnel's connector in this same container, and Cloudflare sets both
+  # headers at the edge (and strips client-supplied CF-Connecting-IP), so PHP
+  # takes the client's address and scheme from them. Before any script, so
+  # Bedrock and WordPress see them as the request's own.
+  socketPrepend = pkgs.writeText "wordpress-nix-socket-prepend.php" ''
+    <?php
+    if (PHP_SAPI !== 'cli') {
+        if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+            $_SERVER['REMOTE_ADDR'] = $_SERVER['HTTP_CF_CONNECTING_IP'];
+        }
+        if (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''') === 'https') {
+            $_SERVER['HTTPS'] = 'on';
+            $_SERVER['SERVER_PORT'] = 443;
+        }
+    }
+  '';
 
-  # The front end reads a published snapshot; without one every statement goes
-  # to the primary, which is what the control plane wants.
-  tursoSnapshot = turso && cfg.database.turso.snapshotPath != null;
-  # Or the PHP process holds an embedded replica itself, through the wp_turso
-  # extension: no publisher, reads at local speed on every plane.
-  tursoEmbedded = turso && cfg.database.turso.embedded;
-  tursoReplicaPath =
-    if cfg.database.turso.replicaPath != null then
-      cfg.database.turso.replicaPath
-    else
-      "${cfg.stateDir}/turso/replica.db";
-
+  # The PHP build is the same for every site (and so in the binary cache);
+  # what is particular to this one is an ini file in a second scan directory,
+  # read after conf/php.ini.
   php = import ../lib/php.nix {
     inherit pkgs;
     php = cfg.php;
     optimize = cfg.phpOptimize;
-    # conf/php.ini's `error_log = /dev/stderr` is for the OCI image. Under
-    # systemd, fd 2 is a journald socket and open(2) on it fails (ENXIO), so
-    # PHP would reach the SAPI logger only by accident. Unset it outright (PHP
-    # reads an empty value as NULL): FrankenPHP then hands each error to Caddy's
-    # JSON logger at a level mapped from its severity, and wp-cli writes it to
-    # stderr. Placed before phpIniExtra, which may override it.
-    # display_errors leaks paths to visitors; keep it off unless debugging.
-    iniExtra =
-      "error_log =\n" + cfg.phpIniExtra + optionalString (!cfg.debug) "\ndisplay_errors = Off\n";
   };
   frankenphp = import ../lib/frankenphp.nix { inherit pkgs php; };
   wpCli = pkgs.wp-cli.override { inherit php; };
 
-  docroot = "${cfg.stateDir}/www";
-  secretsFile = "${cfg.stateDir}/wp-secrets.php";
-  runtimeSaltsFile = "/run/wordpress/wp-salts.php";
-
-  rustPkgs =
-    if rustNixpkgs != null then rustNixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system} else pkgs;
-
-  # --- remote SQLite plumbing ---
-  # The native extensions, mirroring the OCI image: wp_mysql_parser speeds up
-  # the driver's translation (a rendered page is mostly that work once reads
-  # are local), and wp_turso pools Turso requests and holds the embedded replica.
-  phpExtensions =
-    if remoteSqlite then
-      import ../lib/php-extensions.nix {
-        inherit
-          pkgs
-          php
-          sqliteAnywhere
-          rustPkgs
-          ;
-      }
-    else
-      null;
-
-  # FrankenPHP's embedded PHP does not inherit the CLI wrapper's compiled-in
-  # scan directory; set it explicitly (buildEnv config + native extensions).
-  phpIniScanDir = lib.concatStringsSep ":" (
-    [ "${php}/lib" ] ++ optional (phpExtensions != null) "${phpExtensions.iniDir}"
+  # conf/php.ini's `error_log = /dev/stderr` is for a terminal. Under systemd,
+  # fd 2 is a journald socket and open(2) on it fails (ENXIO), so it is unset:
+  # FrankenPHP then hands each error to Caddy's JSON logger with a level, and
+  # wp-cli writes it to stderr. display_errors would leak paths.
+  #
+  # opcache never revalidates: a deploy is a new store path, so a new key.
+  # max_accelerated_files: core and a handful of plugins are well past the
+  # default 2000 scripts.
+  moduleIni = pkgs.writeTextDir "wordpress-nix.ini" (
+    ''
+      error_log =
+      display_errors = Off
+      display_startup_errors = Off
+      memory_limit = ${cfg.memoryLimit}
+      max_execution_time = 60
+      upload_max_filesize = 64M
+      post_max_size = 64M
+      realpath_cache_size = 4096K
+      opcache.memory_consumption = 96
+      opcache.max_accelerated_files = 20000
+      opcache.validate_timestamps = 0
+      ${optionalString viaSocket "auto_prepend_file = ${socketPrepend}"}
+    ''
+    + cfg.phpIniExtra
   );
 
-  # The WordPress SQLite Anywhere plugin, built by its own flake (the assembled
-  # driver, the patch series applied, vendor/ bundled).
-  sqlitePlugin =
-    if remoteSqlite then
-      "${
-        sqliteAnywhere.packages.${pkgs.stdenv.hostPlatform.system}.default
-      }/share/wordpress/plugins/wordpress-sqlite-anywhere"
-    else
-      null;
+  # FrankenPHP's embedded PHP does not inherit the CLI wrapper's compiled-in
+  # scan directory; set it explicitly, for both.
+  phpIniScanDir = "${php}/lib:${moduleIni}";
 
-  # The db.php drop-in, pointed at the store copy of the plugin. One drop-in
-  # for every engine; wp-config.php's DB_ENGINE picks the backend. Installed
-  # into wp-content by wordpress-init (a drop-in, so gitium ignores it).
-  dbDropIn =
-    if remoteSqlite then
-      pkgs.runCommandLocal "wordpress-${cfg.database.type}-db-drop-in" { } ''
-        substitute ${sqlitePlugin}/db.copy $out \
-          --replace-fail '{SQLITE_IMPLEMENTATION_FOLDER_PATH}' '${sqlitePlugin}' \
-          --replace-fail '{SQLITE_PLUGIN}' 'wordpress-sqlite-anywhere/wordpress-sqlite-anywhere.php'
-      ''
-    else
-      null;
-
-  # The publisher's launcher. The auth token is read from its file into the
-  # environment rather than passed as an argument, so it never appears in the
-  # process list; systemd's EnvironmentFile cannot be used because the secret is
-  # a bare token rather than KEY=value.
-  tursoPublisherScript =
-    if tursoSnapshot then
-      pkgs.writeShellScript "wordpress-turso-publish" ''
-        set -eu
-        ${optionalString (cfg.database.turso.tokenFile != null) ''
-          TURSO_AUTH_TOKEN="$(tr -d '\r\n' < ${lib.escapeShellArg cfg.database.turso.tokenFile})"
-          export TURSO_AUTH_TOKEN
-        ''}
-        exec ${getExe tursoPublisher} \
-          --replica ${lib.escapeShellArg tursoReplicaPath} \
-          --published ${lib.escapeShellArg cfg.database.turso.snapshotPath} \
-          --url ${lib.escapeShellArg cfg.database.turso.url} \
-          "$@"
-      ''
-    else
-      null;
-
-  # The snapshot publisher, for the front end's read path.
-  tursoPublisher =
-    if tursoSnapshot then sqliteAnywhere.lib.mkTursoPublisher { inherit pkgs rustPkgs; } else null;
-
-  # --- managed source mode plumbing ---
-  # The pinned core with the generated wp-config.php at its root. Core entries
-  # are symlinked from the docroot into this tree; PHP resolves __FILE__
-  # through the symlinks, so ABSPATH is this store path and wp-config.php is
-  # found right here — while WP_CONTENT_DIR points back at the mutable tree.
-  wordpressCore = import ../lib/wordpress-core.nix { inherit pkgs; };
-  managedCore =
-    if managed then
-      pkgs.runCommandLocal "wordpress-managed-core" { } ''
-        mkdir $out
-        cp -rL ${wordpressCore}/. $out/
-        chmod -R u+w $out
-        rm -rf $out/wp-content
-        rm -f $out/wp-config-sample.php
-        cp ${wpConfig} $out/wp-config.php
-      ''
-    else
-      null;
-
-  # Where wp-cli should look for WordPress.
+  # ---- Bedrock's environment --------------------------------------------
   #
-  # In managed mode the generated wp-config.php sits at the root of the pinned
-  # store core rather than in the docroot: PHP resolves __FILE__ through the
-  # docroot's core symlinks, so ABSPATH is that store path and WordPress finds
-  # its config beside it. wp-cli locates WordPress from --path instead, and the
-  # docroot has no wp-config.php at all, so pointing it there fails with
-  # "'wp-config.php' not found" — which silently broke wp-cron on precisely the
-  # plane that owns cron, and every `wp` invocation on an admin plane with it.
-  wpPath =
-    if managed then
-      managedCore
-    else if gitMode then
-      gitSrc
+  # Rendered as a .env Bedrock's Dotenv reads: strings single-quoted (literal,
+  # no interpolation), booleans and integers bare, null left out.
+  renderValue =
+    name: value:
+    if builtins.isBool value then
+      lib.boolToString value
+    else if builtins.isInt value then
+      toString value
     else
-      docroot;
+      "'${value}'";
+  settingsLines = lib.mapAttrsToList (name: value: "${name}=${renderValue name value}") (
+    lib.filterAttrs (_: v: v != null) cfg.settings
+  );
+  badSettings = lib.attrNames (
+    lib.filterAttrs (
+      _: v: builtins.isString v && (lib.hasInfix "'" v || lib.hasInfix "\n" v)
+    ) cfg.settings
+  );
+  settingsFile = pkgs.writeText "wordpress-nix-settings.env" ''
+    # services.wordpress-nix.settings (non-secret). wordpress-init appends the
+    # environmentFiles to this and writes ${envFile}.
+    ${concatStringsSep "\n" settingsLines}
+  '';
 
-  # git mode's document root, composed the same way managed mode's is and for
-  # the same reason.
-  #
-  # The writable docroot is a farm of symlinks into a store tree, and PHP
-  # resolves __FILE__ to the real path — so ABSPATH is that store tree, and
-  # wp-load.php looks for wp-config.php beside it. A wp-config.php written into
-  # the docroot is therefore never read: WordPress concluded it was uninstalled
-  # and redirected every request to wp-admin/setup-config.php. managed mode has
-  # always put the generated config inside its store core for exactly this
-  # reason; git mode did not, which meant it could only ever serve the installer.
-  #
-  # When manageWpConfig is off the tree is used as-is, config and all.
-  gitCore =
-    if gitMode && cfg.source.manageWpConfig then
-      pkgs.runCommandLocal "wordpress-git-core" { } ''
-        mkdir $out
-        cp -rL ${cfg.source.path}/. $out/
-        chmod -R u+w $out
-        rm -f $out/wp-config-sample.php
-        cp ${wpConfig} $out/wp-config.php
-      ''
-    else
-      null;
-  gitSrc = if gitCore != null then gitCore else cfg.source.path;
+  credentialName = i: "env-${toString i}";
+  envCredentials = lib.imap0 (i: f: "${credentialName i}:${f}") cfg.environmentFiles;
 
-  dbLocal = cfg.database.createLocally;
-  # Local DB uses MariaDB unix_socket auth (passwordless, OS-user matched);
-  # external DB connects over TCP with a password.
-  dbHost =
-    if dbLocal then "localhost:${cfg.database.socket}" else "${cfg.database.host}:${toString cfg.database.port}";
+  initScript = pkgs.writeShellScript "wordpress-init" ''
+    set -euo pipefail
+    umask 077
+    tmp=${envFile}.tmp
+    {
+      cat ${settingsFile}
+      ${concatMapStringsSep "\n" (i: ''
+        printf '\n# environmentFiles[%d]\n' ${toString i}
+        cat "$CREDENTIALS_DIRECTORY/${credentialName i}"
+      '') (lib.range 0 (builtins.length cfg.environmentFiles - 1))}
+    } > "$tmp"
+    chmod 0400 "$tmp"
+    mv -f "$tmp" ${envFile}
+    # tmpfiles owns its mode and owner; this only covers a mount that came late.
+    mkdir -p ${lib.escapeShellArg cfg.uploadsDir}
+  '';
 
-  # Socket mode: Caddy binds a unix socket instead of a TCP port, so nothing in
-  # the container listens on the network at all. Caddy's default socket mode is
-  # 0200 (u=w), which a separate connector process could not open — hence the
-  # explicit permission suffix.
-  viaSocket = cfg.socketPath != "";
-  socketDir = builtins.dirOf cfg.socketPath;
+  # ---- the web server ------------------------------------------------------
 
-  # Normalized so identical paths collapse under lib.unique.
-  mkRuntimeDir = path: "d ${path} 0750 ${cfg.user} ${cfg.group} -";
-
-  # A unix socket is NOT valid as a site address — Caddy parses `unix/...` as the
-  # host `unix` plus a path, then binds TCP :80 anyway. It belongs in the `bind`
-  # directive inside the site block instead, with the site address kept as `:80`
-  # so no scheme is inferred and automatic HTTPS stays off.
   siteAddress = if cfg.domain != "" && !viaSocket then cfg.domain else ":80";
-
-  # Caddy's default unix socket mode is 0200 (u=w only), which no peer process
-  # could open, so the mode is always stated explicitly.
   bindDirective = optionalString viaSocket "bind unix/${cfg.socketPath}|${cfg.socketMode}";
 
-  # A unix socket has no peer address, so REMOTE_ADDR is meaningless and Caddy's
-  # trusted_proxies (which parses an IP) cannot vouch for X-Forwarded-For. Take
-  # the client IP from Cloudflare's header instead: the socket is unreachable
-  # except through the connector in this same container, and Cloudflare strips
-  # client-supplied CF-Connecting-IP at the edge, so it is trustworthy here.
-  socketRemoteAddr = optionalString viaSocket ''
-    // Socket mode: recover the real client IP from Cloudflare's header.
-    if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
-        $_SERVER['REMOTE_ADDR'] = $_SERVER['HTTP_CF_CONNECTING_IP'];
-    }
-  '';
+  # Upload path lists as regular expressions: a `*` matches within one segment.
+  globRe = p: lib.replaceStrings [ "." "*" ] [ "\\." "[^/]*" ] p;
+  alternation = ps: "(?:${concatMapStringsSep "|" globRe ps})";
+  # What stays on uploadsDir under its old /wp-content/uploads URL: served
+  # (localUploadPrefixes) or refused (denyUploadPaths), never the media host.
+  localRe = alternation (cfg.localUploadPrefixes ++ cfg.denyUploadPaths);
+  mediaUrl = cfg.settings.S3_PUBLIC_URL or null;
 
-  # Public plane: the administration surfaces never reach PHP at all.
-  #
-  # Two deliberate holes. admin-ajax.php and admin-post.php stay reachable
-  # because WooCommerce, Give and essentially every form plugin POST to them
-  # from the front end. And /wp-json is left entirely open -- the Store API,
-  # block-editor assets and form endpoints live there, and blocking writes by
-  # path would break ordinary visitors. What makes that safe is not a path list
-  # but the session rule: platform-public-plane.php refuses to authenticate a
-  # privileged user here, and each plane declares a different WP_SITEURL so
-  # COOKIEHASH differs and an admin cookie minted on the admin host does not
-  # authenticate on this one. With no privileged session obtainable, every
-  # administrative REST route and ajax action is already denied by WordPress'
-  # own capability checks.
-  publicPlaneDirectives = optionalString publicPlane ''
-    @wpAdmin {
-      path /wp-admin /wp-admin/*
-      not path /wp-admin/admin-ajax.php /wp-admin/admin-post.php
-    }
-    redir @wpAdmin ${cfg.plane.adminUrl}{uri} 302
-
-    ${optionalString (!cfg.plane.allowLogin) ''
-      redir /wp-login.php ${cfg.plane.adminUrl}{uri} 302
-    ''}
-
-    respond /xmlrpc.php 403
-
-    # Cron is the admin plane's job; the signup flows are not offered.
-    @notServed path /wp-cron.php /wp-signup.php /wp-activate.php /wp-links-opml.php
-    respond @notServed 404
-
-    # No PHP file under wp-content or wp-includes is a legitimate entry point.
-    @strayPhp path /wp-content/*.php /wp-includes/*.php
-    respond @strayPhp 404
-  '';
-
-  # journald fields shared with frappe-nix and odoo-nix: the cluster's log
-  # shipper turns APP_SERVICE and APP_SITE into labels, so keep them exact.
-  logFields = role: identifier: {
-    SyslogIdentifier = identifier;
-    LogExtraFields = [
-      "APP_SERVICE=${role}"
-      "APP_SITE=${cfg.logging.site}"
-    ];
-  };
-
-  # One JSON line per request, from Caddy's http.log.access logger (which
-  # redacts Cookie and Authorization headers by default).
   accessLogDirective = optionalString cfg.logging.accessLog ''
     log {
       output stderr
@@ -369,9 +224,8 @@ let
     }
   '';
 
-  # The global `log` is Caddy's default logger, which FrankenPHP (and so PHP's
-  # error log) writes through too. Caddy already picks JSON when stderr is not
-  # a terminal; stating it pins the `level` field the collector filters on.
+  # §7.3 of the v3 plan. Caddy orders the directives itself (redir, rewrite,
+  # handle, respond, php_server), whatever the order here.
   caddyfile = pkgs.writeText "Caddyfile" ''
     {
       ${optionalString (cfg.domain != "" && cfg.acmeEmail != "") "email ${cfg.acmeEmail}"}
@@ -381,7 +235,9 @@ let
         format json
       }
 
-      frankenphp
+      frankenphp {
+        num_threads ${toString cfg.threads}
+      }
 
       servers {
         timeouts {
@@ -403,367 +259,317 @@ let
     ${siteAddress} {
       ${bindDirective}
       ${accessLogDirective}
-      ${publicPlaneDirectives}
+      root * ${docroot}
+      encode zstd br gzip
 
-      @static {
-        file
-        path *.css *.eot *.gif *.ico *.jpeg *.jpg *.js *.otf *.png *.svg *.ttf *.webp *.woff *.woff2
+      # Classic URLs a converted site's content and the outside world still
+      # hold. Uploads that stay local keep their files here; every other
+      # upload is an attachment, now in the media bucket.
+      @legacyLocal path_regexp ll ^/wp-content/uploads/(${localRe}/.*)$
+      redir @legacyLocal /app/uploads/{re.ll.1} 301
+      @legacyMedia {
+        path_regexp lm ^/wp-content/uploads/(.*)$
+        not path_regexp ^/wp-content/uploads/${localRe}/
+      }
+      redir @legacyMedia ${
+        if mediaUrl != null then lib.removeSuffix "/" mediaUrl else "/app/uploads"
+      }/{re.lm.1} 301
+      @legacyAdmin path /wp-admin /wp-admin/*
+      redir @legacyAdmin /wp{uri} 301
+      redir /wp-login.php /wp{uri} 308
+      @legacyContent path_regexp lc ^/wp-content/(plugins|themes)/(.*)$
+      rewrite @legacyContent /app/{re.lc.1}/{re.lc.2}
+
+      # The one writable directory the web reaches: files only, never PHP,
+      # whatever the extension, and never the private prefixes (which their
+      # plugins serve through PHP themselves).
+      handle /app/uploads/* {
+        @private path_regexp ^/app/uploads/${alternation cfg.denyUploadPaths}(?:/|$)
+        respond @private 403
+        @exec path_regexp (?i)\.(ph(p\d?|tml|ar|ps|t)|cgi|pl|py|sh|htaccess|user\.ini)$
+        respond @exec 403
+        file_server
       }
 
-      root * ${docroot}
-      encode br zstd gzip
+      # No PHP file under wp-includes is an entry point but TinyMCE's loader.
+      @incPhp {
+        path_regexp (?i)^/wp/wp-includes/.*\.ph(p\d?|tml|ar)$
+        not path /wp/wp-includes/js/tinymce/wp-tinymce.php
+      }
+      respond @incPhp 404
+
+      respond /xmlrpc.php 403
+      respond /wp/xmlrpc.php 403
+      # Cron is the timer's (DISABLE_WP_CRON); the config is not a page.
+      @notServed path /wp-cron.php /wp/wp-cron.php /wp-config.php /wp/wp-config-sample.php /.env*
+      respond @notServed 404
 
       php_server
     }
   '';
 
-  wpConfig = pkgs.writeText "wp-config.php" ''
-    <?php
-    // Managed by services.wordpress-nix — regenerated on activation; do not edit.
-
-    ${socketRemoteAddr}
-    ${optionalString (managed || gitMode) ''
-      // Core lives in the (read-only) store, so ABSPATH is a store path. Point
-      // wp-content back at the docroot: that is where the symlink farm puts the
-      // read-only plugins/themes and the real, writable uploads, cache and
-      // upgrade directories. Without this, uploads would resolve to a store
-      // path that does not exist and every write would fail.
-      define('WP_CONTENT_DIR', '${docroot}/wp-content');
-    ''}
-    ${optionalString remoteSqlite ''
-      // The engine the WordPress SQLite Anywhere drop-in boots.
-      define('DB_ENGINE', '${cfg.database.type}');
-    ''}
-    ${optionalString turso ''
-      // Turso through the MySQL-on-SQLite driver (db.php drop-in).
-      define('WP_TURSO_URL', '${cfg.database.turso.url}');
-      ${optionalString (cfg.database.turso.tokenFile != null) ''
-        define('WP_TURSO_TOKEN', trim((string) @file_get_contents('${cfg.database.turso.tokenFile}')));
-      ''}
-      define('WP_TURSO_HTTP_TIMEOUT_MS', ${toString cfg.database.turso.requestTimeoutMs});
-      ${
-        if tursoEmbedded then
-          ''
-            // Reads come from an embedded replica the PHP process holds open (the
-            // wp_turso extension), pulled from the primary every
-            // ${toString cfg.database.turso.pullIntervalMs} ms and again at the end of
-            // any request that wrote, so the next request reads those writes. The
-            // first write in a request latches the rest of it to the primary.
-            define('WP_TURSO_REPLICA', '${tursoReplicaPath}');
-            define('WP_TURSO_REPLICA_PULL_MS', ${toString cfg.database.turso.pullIntervalMs});
-          ''
-        else if tursoSnapshot then
-          ''
-            // Reads come from the snapshot the publisher maintains; the first write
-            // latches the rest of the request to the primary, so it reads its own
-            // writes. The snapshot is therefore behind the primary by at most one
-            // publish interval.
-            define('WP_TURSO_SNAPSHOT', '${cfg.database.turso.snapshotPath}');
-          ''
-        else
-          ''
-            // No snapshot: every statement goes to the primary. Co-locate it --
-            // per-statement latency is what an admin page multiplies.
-          ''
-      }
-    ''}
-    // Database settings${optionalString remoteSqlite " (placeholders — the ${cfg.database.type} drop-in owns the connection)"}
-    define('DB_HOST', '${if remoteSqlite then "localhost" else dbHost}');
-    define('DB_USER', '${cfg.database.user}');
-    define('DB_NAME', '${cfg.database.name}');
-    define('DB_CHARSET', 'utf8');
-    define('DB_COLLATE', ''');
-
-    $table_prefix = '${cfg.tablePrefix}';
-
-    // DB password + authentication salts (kept out of the Nix store).
-    require '${secretsFile}';
-
-    // Debug mode
-    define('WP_DEBUG', ${if cfg.debug then "true" else "false"});
-    ${optionalString (planeUrls.home != "") "define('WP_HOME', '${planeUrls.home}');"}
-    ${optionalString (planeUrls.siteurl != "") "define('WP_SITEURL', '${planeUrls.siteurl}');"}
-    ${optionalString (cfg.plane.role != "single") ''
-      // Which plane this is. The platform mu-plugins key off it: the public
-      // plane refuses privileged logins and redirects admin requests, the
-      // admin plane repairs preview links and drives gitium.
-      define('WP_PLATFORM_PLANE', '${cfg.plane.role}');
-      ${optionalString (cfg.plane.adminUrl != "")
-        "define('WP_PLATFORM_ADMIN_URL', '${cfg.plane.adminUrl}');"
-      }
-      ${optionalString (cfg.plane.publicUrl != "")
-        "define('WP_PLATFORM_PUBLIC_URL', '${cfg.plane.publicUrl}');"
-      }
-    ''}
-    ${optionalString (cfg.plane.excludePlugins != [ ]) ''
-      // Dropped from active_plugins on this plane only, without touching the
-      // database (platform-environment.php).
-      define('WP_PLATFORM_PLANE_EXCLUDED_PLUGINS', '${
-        lib.concatStringsSep "," cfg.plane.excludePlugins
-      }');
-    ''}
-    define('FS_METHOD', 'direct');
-    ${
-      if managed then
-        ''
-          // The core version is pinned by the platform flake; never self-update.
-          define('WP_AUTO_UPDATE_CORE', false);
-          define('AUTOMATIC_UPDATER_DISABLED', true);
-        ''
-      else
-        "define('WP_AUTO_UPDATE_CORE', 'minor');"
-    }
-    define('CONCATENATE_SCRIPTS', false);
-    ${optionalString (!managed || publicPlane) "define('DISALLOW_FILE_EDIT', true);"}
-    ${optionalString (cfg.source.type == "git" || publicPlane) "define('DISALLOW_FILE_MODS', true);"}
-    ${optionalString (managed && cfg.source.siteRepo.deployKeyFile != null) ''
-      // gitium authenticates pushes with the same deploy key init cloned with.
-      define('GIT_KEY_FILE', '${cfg.source.siteRepo.deployKeyFile}');
-    ''}
-    ${optionalString installGitium ''
-      // The platform installed gitium; platform-gitium.php activates it.
-      define('WP_PLATFORM_GITIUM', true);
-      // One lock for every caller. gitium's default is a file in the PHP
-      // temp directory, and the web service and the reconcile timer each get
-      // their own PrivateTmp — so they would take two different locks and run
-      // git concurrently.
-      define('WP_PLATFORM_GITIUM_LOCK', '${gitiumLock}');
-    ''}
-    define('DISABLE_WP_CRON', true);
-    define('WP_CACHE', true);
-    define('WP_POST_REVISIONS', 5);
-    define('EMPTY_TRASH_DAYS', 7);
-    define('WP_MEMORY_LIMIT', '1G');
-
-    ${cfg.configExtra}
-
-    /** Absolute path to the WordPress directory. */
-    if ( ! defined( 'ABSPATH' ) ) {
-        define( 'ABSPATH', __DIR__ . '/' );
-    }
-
-    /** Sets up WordPress vars and included files. */
-    require_once ABSPATH . 'wp-settings.php';
-  '';
-
-  initScript = pkgs.writeShellScript "wordpress-init" ''
-    set -euo pipefail
-    umask 077
-
-    DOCROOT=${lib.escapeShellArg docroot}
-    SECRETS=${lib.escapeShellArg secretsFile}
-
-    # A crashed core update can leave the site stuck in maintenance mode.
-    rm -f "$DOCROOT/.maintenance" || true
-
-    ${
-      if cfg.source.type == "state" then
-        ''
-          # State mode: real, writable tree. Download core on first boot.
-          if [ ! -f "$DOCROOT/wp-includes/version.php" ]; then
-            echo "Downloading WordPress core (${cfg.source.version})"
-            ${getExe wpCli} core download --path="$DOCROOT" --version=${lib.escapeShellArg cfg.source.version}
-          fi
-        ''
-      else if managed then
-        ''
-          # Managed mode: seed the site repo (once), then (re)point the core
-          # symlinks at the pinned store docroot — atomic and idempotent, so a
-          # platform core bump takes effect on the next start.
-          ${optionalString (cfg.source.siteRepo.url != null) ''
-            if [ ! -e "$DOCROOT/.git" ]; then
-              echo "Seeding site repo ${cfg.source.siteRepo.url}"
-              git -C "$DOCROOT" init -b ${lib.escapeShellArg cfg.source.siteRepo.branch}
-              git -C "$DOCROOT" remote add origin ${lib.escapeShellArg cfg.source.siteRepo.url}
-              ${optionalString (cfg.source.siteRepo.deployKeyFile != null) ''
-                export GIT_SSH_COMMAND="ssh -i ${lib.escapeShellArg cfg.source.siteRepo.deployKeyFile} -o StrictHostKeyChecking=accept-new"
-              ''}
-              git -C "$DOCROOT" fetch origin ${lib.escapeShellArg cfg.source.siteRepo.branch}
-              git -C "$DOCROOT" checkout -f ${lib.escapeShellArg cfg.source.siteRepo.branch}
-            fi
-          ''}
-
-          CORE=${managedCore}
-          for entry in "$CORE"/*; do
-            base=$(basename "$entry")
-            case "$base" in
-              wp-content|wp-config.php) continue ;;
-            esac
-            ln -sfn "$entry" "$DOCROOT/$base"
-          done
-
-          mkdir -p "$DOCROOT/wp-content/plugins" "$DOCROOT/wp-content/themes" \
-                   "$DOCROOT/wp-content/mu-plugins" "$DOCROOT/wp-content/languages"
-
-          # A themeless site white-screens: seed the core default themes on
-          # first boot (they become part of the site repo via gitium).
-          if [ -z "$(ls -A "$DOCROOT/wp-content/themes" 2>/dev/null)" ]; then
-            cp -aL --no-preserve=mode ${wordpressCore}/wp-content/themes/. "$DOCROOT/wp-content/themes/"
-          fi
-        ''
-      else
-        ''
-          # Git mode: rebuild the writable symlink farm into the read-only store
-          # docroot — which carries the generated wp-config.php, because PHP
-          # resolves these symlinks and ABSPATH lands there (see gitCore).
-          SRC=${lib.escapeShellArg (toString gitSrc)}
-          for entry in "$SRC"/*; do
-            base=$(basename "$entry")
-            case "$base" in
-              wp-content|wp-config.php|wp-config-sample.php) continue ;;
-            esac
-            ln -sfn "$entry" "$DOCROOT/$base"
-          done
-          mkdir -p "$DOCROOT/wp-content"
-          for sub in plugins themes mu-plugins languages; do
-            if [ -e "$SRC/wp-content/$sub" ]; then
-              ln -sfn "$SRC/wp-content/$sub" "$DOCROOT/wp-content/$sub"
-            fi
-          done
-        ''
-    }
-
-    # Writable content dirs (all modes; also created by tmpfiles).
-    mkdir -p "$DOCROOT/wp-content/uploads" "$DOCROOT/wp-content/cache" "$DOCROOT/wp-content/upgrade"
-
-    ${optionalString (cfg.source.type == "state") (
-      concatMapStringsSep "\n" (p: ''
-        mkdir -p "$DOCROOT/wp-content/mu-plugins"
-        cp -aL --no-preserve=mode ${p}/. "$DOCROOT/wp-content/mu-plugins/"
-      '') cfg.muPlugins
-    )}
-    ${optionalString managed (
-      # Refresh platform mu-plugins without disturbing the site's own
-      # (gitium ignores platform-*.php via the site repo's .gitignore).
-      ''
-        rm -f "$DOCROOT/wp-content/mu-plugins"/platform-*.php
-      ''
-      + concatMapStringsSep "\n" (p: ''
-        cp -aL --no-preserve=mode ${p}/. "$DOCROOT/wp-content/mu-plugins/"
-      '') cfg.muPlugins
-    )}
-
-    ${optionalString installGitium ''
-      # gitium, refreshed every start so a platform bump applies on restart.
-      # The site repo's .gitignore excludes it, so replacing the directory does
-      # not show up as a change gitium would then try to commit.
-      install -d -m 0750 "$DOCROOT/wp-content/plugins"
-      rm -rf "$DOCROOT/wp-content/plugins/gitium"
-      cp -aL --no-preserve=mode ${cfg.gitium.package} "$DOCROOT/wp-content/plugins/gitium"
-      # gitium shells out to git through its own bundled ssh wrapper and refuses
-      # to show any UI unless that file is executable. The activation hook that
-      # would chmod it never runs, because the plugin is activated by a filter
-      # rather than through the database.
-      chmod 0755 "$DOCROOT/wp-content/plugins/gitium/inc/ssh-git"
-    ''}
-
-    ${optionalString remoteSqlite ''
-      # The database drop-in (regenerated each boot; a drop-in, so gitium ignores
-      # it and WordPress loads it in place of MySQL).
-      install -m 0644 ${dbDropIn} "$DOCROOT/wp-content/db.php"
-    ''}
-    ${optionalString tursoSnapshot ''
-      # The snapshot the publisher writes lives beside the database directory the
-      # plugin wants writable (it drops an index.php and .htaccess there).
-      install -d -m 0755 -o ${cfg.user} -g ${cfg.group} ${
-        lib.escapeShellArg (builtins.dirOf cfg.database.turso.snapshotPath)
-      }
-    ''}
-    ${optionalString tursoEmbedded ''
-      # The embedded replica's directory: the PHP process bootstraps the file on
-      # first use and keeps it across restarts, which keeps each pull incremental.
-      install -d -m 0750 -o ${cfg.user} -g ${cfg.group} ${
-        lib.escapeShellArg (builtins.dirOf tursoReplicaPath)
-      }
-    ''}
-
-    # --- secrets: salts (provided or generated once), DB password every run ---
-    ${
-      if cfg.saltsFile != null then
-        ''
-          # Platform-shared salts: materialize to tmpfs so the secret never
-          # rests on the state filesystem; regenerate the require shim.
-          {
-            echo "<?php"
-            cat ${lib.escapeShellArg cfg.saltsFile}
-          } > ${runtimeSaltsFile}
-          chmod 400 ${runtimeSaltsFile}
-          {
-            echo "<?php"
-            echo "require '${runtimeSaltsFile}';"
-          } > "$SECRETS"
-        ''
-      else
-        ''
-          if [ ! -f "$SECRETS" ]; then
-            {
-              echo "<?php"
-              for k in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY \
-                       AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
-                printf "define('%s', '%s');\n" "$k" "$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
-              done
-            } > "$SECRETS"
-          fi
-        ''
-    }
-
-    sed -i "/define('DB_PASSWORD'/d" "$SECRETS"
-    if [ -n "''${CREDENTIALS_DIRECTORY:-}" ] && [ -f "''${CREDENTIALS_DIRECTORY:-}/db_password" ]; then
-      pw="$(cat "$CREDENTIALS_DIRECTORY/db_password")"
-      enc="$(printf '%s' "$pw" | base64 -w0)"
-      printf "define('DB_PASSWORD', base64_decode('%s'));\n" "$enc" >> "$SECRETS"
-    else
-      printf "define('DB_PASSWORD', ''');\n" >> "$SECRETS"
-    fi
-    chmod 600 "$SECRETS"
-
-    ${optionalString (cfg.source.manageWpConfig && !managed && !gitMode) ''
-      # State mode only: its docroot holds real files, so ABSPATH is the docroot
-      # and the config belongs here. managed and git mode both carry it inside
-      # their store tree instead.
-      rm -f "$DOCROOT/wp-config.php"
-      cp ${wpConfig} "$DOCROOT/wp-config.php"
-      chmod 644 "$DOCROOT/wp-config.php"
-    ''}
-  '';
-
-  # Convenience `wp` on the system PATH. Run DB-touching commands as the service
-  # user: `sudo -u ${cfg.user} wp ...` (unix_socket auth matches the OS user).
-  wpWrapper = pkgs.writeShellScriptBin "wp" ''
-    export HOME=${lib.escapeShellArg cfg.stateDir}
-    export WP_CLI_CACHE_DIR=${lib.escapeShellArg "${cfg.stateDir}/.wp-cli/cache"}
-    export PHP_INI_SCAN_DIR=${lib.escapeShellArg phpIniScanDir}
-    exec ${getExe wpCli} --path=${lib.escapeShellArg wpPath} "$@"
-  '';
+  # ---- wp-cli, for the units and for operators ------------------------------
 
   serviceEnv = {
     HOME = cfg.stateDir;
     WP_CLI_CACHE_DIR = "${cfg.stateDir}/.wp-cli/cache";
     SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    # Applies to FrankenPHP's embedded PHP and to wp-cli alike (the native
-    # extensions load from here in turso mode).
     PHP_INI_SCAN_DIR = phpIniScanDir;
+    TMPDIR = "/tmp";
   };
 
-  # gitium shells out to git over ssh from web requests and cron.
-  gitPath = optional managed pkgs.git ++ optional managed pkgs.openssh;
+  wp = "${getExe wpCli} --path=${wpPath}";
 
-  # Only managed mode has the mutable, git-backed wp-content that gitium needs:
-  # the public plane's tree is a read-only store path, and state mode has no
-  # remote to push to.
-  installGitium = managed && cfg.gitium.package != null;
-  gitiumLock = "${cfg.stateDir}/gitium.lock";
+  # `wp` on the system PATH. Run it as the service user (unix_socket auth
+  # matches the OS user, and bedrock.env is 0400 to it):
+  #   runuser -u wordpress -- wp option get home
+  wpWrapper = pkgs.writeShellScriptBin "wp" ''
+    ${lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}") serviceEnv
+    )}
+    exec ${wp} "$@"
+  '';
+
+  # Migrate and cron take one lock: cron never runs on a half-migrated
+  # database, and skips its turn (exit 0) while a migrate holds it.
+  lockFile = "${runtimeDir}/maintenance.lock";
+  flock = "${pkgs.util-linux}/bin/flock";
+
+  # ---- migrate on deploy ----------------------------------------------------
+  #
+  # python-devops-nix's migrate flow (lib.nixos.migrate.script), frappe-nix's
+  # steps with WordPress's commands:
+  #
+  #   check      finish an interrupted rollback; skip (100) when this build
+  #              already migrated, or when the database has no tables or no
+  #              installed WordPress (first boot, before `site import`)
+  #   dump       mysqldump | gzip into ${cfg.stateDir}/snapshots (0700, 0600)
+  #   verify     the dump ends with mysqldump's "-- Dump completed"
+  #   migrate    `wp core update-db`, `wp wc update` when WooCommerce is
+  #              active, `wp cache flush`
+  #   restore    drop every table and view, load the snapshot
+  #   onSuccess  record the build
+  #   onFailure  say so; the site keeps serving the new code on the restored
+  #              schema, which WordPress supports (it asks for the database
+  #              update in wp-admin)
+  marker = "${cfg.stateDir}/.wordpress-migrate-build";
+  restoring = "${cfg.stateDir}/.wordpress-migrate-restoring";
+  dbName = cfg.database.name;
+  connArgs = "--socket=${cfg.database.socket} --user=${cfg.database.user}";
+  mysqlBin = "${cfg.database.package}/bin/mariadb";
+  mysqldumpBin = "${cfg.database.package}/bin/mariadb-dump";
+  gzip = "${pkgs.gzip}/bin/gzip";
+  say = msg: lib.escapeShellArg "wordpress-migrate(${cfg.logging.site}): ${msg}";
+  step =
+    what: body:
+    pkgs.writeShellScript "wordpress-migrate-${what}" ''
+      set -uo pipefail
+      ${body}
+    '';
+
+  migrateCheck = step "check" ''
+    if [ -e ${restoring} ]; then
+      SNAP="$(cat ${restoring})"
+      if [ ! -f "$SNAP" ]; then
+        echo "<3>"${say "an interrupted rollback was loading"}" $SNAP, which is gone; the database is partial. Restore it by hand, remove ${restoring}, then redeploy." >&2
+        exit 1
+      fi
+      echo "<4>"${say "the last rollback was interrupted; finishing it from"}" $SNAP" >&2
+      ${migrateRestore} "$SNAP" || { echo "<3>"${say "could not finish the interrupted rollback; the database is partial."} >&2; exit 1; }
+    fi
+
+    if [ "$(cat ${marker} 2>/dev/null || true)" = "${cfg.package}" ]; then
+      echo ${say "build unchanged since the last successful migrate; skipping."}
+      exit 100
+    fi
+
+    if ! TABLES="$(${mysqlBin} ${connArgs} -N -B -e \
+        "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${dbName}';")"; then
+      echo "<3>"${say "cannot reach the database"} >&2
+      exit 1
+    fi
+    # is-installed answers 1 for "not installed"; anything else (255: a PHP
+    # fatal in newly deployed code, a database error) is a failed migrate, not
+    # a first boot.
+    rc=0
+    if [ "$TABLES" != "0" ]; then
+      ${wp} core is-installed || rc=$?
+    else
+      rc=1
+    fi
+    if [ "$rc" -eq 1 ]; then
+      echo "<5>"${say "WordPress is not installed in ${dbName}; nothing to migrate. Import or install the site, then redeploy."} >&2
+      exit 100
+    elif [ "$rc" -ne 0 ]; then
+      echo "<3>"${say "wp core is-installed failed"}" (exit $rc); WordPress does not load. Fix the build and redeploy." >&2
+      exit 1
+    fi
+    exit 0
+  '';
+
+  migrateDump = step "dump" ''
+    set -e
+    ${mysqldumpBin} ${connArgs} --single-transaction --quick --no-tablespaces \
+      --routines --triggers ${dbName} | ${gzip}
+  '';
+
+  # Recorded in ${restoring} while it loads: a restore killed half-way leaves
+  # a database that a later dump would call whole (see frappe-nix#296).
+  migrateRestore = step "restore" ''
+    printf '%s' "$1" > ${restoring}
+    rc=0
+    { echo "SET FOREIGN_KEY_CHECKS=0;"
+      ${mysqlBin} ${connArgs} -N -e \
+        "SELECT CONCAT('DROP ', IF(TABLE_TYPE='VIEW','VIEW','TABLE'), ' IF EXISTS \`', TABLE_NAME, '\`;') FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${dbName}';"
+    } | ${mysqlBin} ${connArgs} ${dbName} || rc=1
+    ${gzip} -cd -- "$1" | ${mysqlBin} ${connArgs} ${dbName} || rc=1
+    [ "$rc" -eq 0 ] && rm -f -- ${restoring}
+    exit "$rc"
+  '';
+
+  migrateRun = step "run" ''
+    set -e
+    echo ${say "wp core update-db"}
+    ${wp} core update-db
+    if ${wp} plugin is-active woocommerce 2>/dev/null; then
+      echo ${say "wp wc update"}
+      ${wp} wc update
+    fi
+    ${wp} cache flush
+  '';
+
+  migrateSuccess = step "success" ''
+    printf '%s' "${cfg.package}" > ${marker}
+  '';
+
+  migrateFailure = step "failure" ''
+    echo "<3>"${say "migrate failed"}" (rollback: $MIGRATE_ROLLBACK); the site serves this build on the schema the rollback left. Investigate and redeploy." >&2
+  '';
+
+  migrateScript = base.nixos.migrate.script {
+    inherit pkgs;
+    label = "wordpress-migrate";
+    target = cfg.logging.site;
+    cfg = cfg.migrate;
+    check = migrateCheck;
+    migrate = migrateRun;
+    onSuccess = migrateSuccess;
+    onFailure = migrateFailure;
+    dump = migrateDump;
+    restore = migrateRestore;
+    verify = base.nixos.migrate.verifiers.mysqldump { inherit pkgs; };
+    snapshotDir = "${cfg.stateDir}/snapshots";
+    prefix = "premigrate";
+    extension = ".sql.gz";
+  };
+
+  cronScript = pkgs.writeShellScript "wordpress-cron" ''
+    set -euo pipefail
+    # An empty database (first boot, before `site import`) has nothing due;
+    # any other failure of is-installed (a PHP fatal) fails the run.
+    rc=0
+    ${wp} core is-installed || rc=$?
+    [ "$rc" -eq 1 ] && exit 0
+    [ "$rc" -eq 0 ] || exit "$rc"
+    # --due-now runs the events whose time has come (`--all --due-now` is
+    # refused by wp-cli as contradictory).
+    exec ${wp} cron event run --due-now
+  '';
+
+  # ---- units ----------------------------------------------------------------
+
+  # journald fields shared with frappe-nix and odoo-nix (python-devops-nix's
+  # lib.journald.fields): the log shipper's labels. SyslogIdentifier is the
+  # unit's name.
+  logFields =
+    role: identifier:
+    base.journald.fields {
+      prefix = "wordpress";
+      inherit role identifier;
+      site = cfg.logging.site;
+    };
+
+  readWritePaths = [
+    cfg.stateDir
+  ]
+  ++ optional (!lib.hasPrefix "${cfg.stateDir}/" cfg.uploadsDir) cfg.uploadsDir;
+
+  harden = args: base.nixos.hardening ({ profiles = [ "jit" ]; } // args);
+
+  phpPath = [
+    wpCli
+    pkgs.coreutils
+    cfg.database.package
+  ];
 in
 {
+  imports =
+    map
+      (
+        path:
+        mkRemovedOptionModule
+          (
+            [
+              "services"
+              "wordpress-nix"
+            ]
+            ++ path
+          )
+          ''
+            wordpress-nix 3.0 serves one Bedrock package (services.wordpress-nix.package,
+            from lib.mkBedrockSite) and configures it through `settings` and
+            `environmentFiles`. See docs/reference/nixos-module.md.
+          ''
+      )
+      [
+        [ "source" ]
+        [ "saltsFile" ]
+        [
+          "database"
+          "type"
+        ]
+        [
+          "database"
+          "turso"
+        ]
+        [
+          "database"
+          "host"
+        ]
+        [
+          "database"
+          "port"
+        ]
+        [
+          "database"
+          "passwordFile"
+        ]
+        [ "gitium" ]
+        [ "plane" ]
+        [ "tablePrefix" ]
+        [ "configExtra" ]
+        [ "muPlugins" ]
+        [ "debug" ]
+      ];
+
   options.services.wordpress-nix = {
-    enable = mkEnableOption "WordPress served by FrankenPHP (standalone)";
+    enable = mkEnableOption "a Bedrock WordPress site served read-only by FrankenPHP";
+
+    package = mkOption {
+      type = types.package;
+      description = ''
+        The site: lib.mkBedrockSite's package (a site flake's
+        packages.<system>.default). `''${package}/web` is the document root,
+        an immutable store path.
+      '';
+      example = lib.literalExpression "inputs.site-acme.packages.x86_64-linux.default";
+    };
 
     php = mkOption {
       type = types.package;
-      default = pkgs.php83;
-      defaultText = lib.literalExpression "pkgs.php83";
-      example = lib.literalExpression "pkgs.php84";
-      description = "Base PHP interpreter. The module wraps it with the optimized ZTS build.";
+      default = site.php or pkgs.php84;
+      defaultText = lib.literalExpression "package.passthru.wordpressNix.php";
+      description = "Base PHP: the one the package was built with. The module wraps it with the optimized ZTS build.";
     };
 
     phpOptimize = mkOption {
@@ -775,37 +581,118 @@ in
     phpIniExtra = mkOption {
       type = types.lines;
       default = "";
-      description = "Extra php.ini lines appended after conf/php.ini.";
+      description = "Extra php.ini lines, after conf/php.ini and the module's own.";
+    };
+
+    profile = mkOption {
+      type = types.enum (lib.attrNames profiles);
+      default = "brochure";
+      description = ''
+        The site's sizing: FrankenPHP threads, PHP memory_limit,
+        WP_MAX_MEMORY_LIMIT (admin requests) and the InnoDB buffer pool.
+
+        brochure     3 threads, 192M, 384M, 256M  (fits 1280 MiB)
+        woocommerce  4 threads, 384M, 768M, 384M  (fits 2560 MiB)
+      '';
+    };
+
+    threads = mkOption {
+      type = types.ints.positive;
+      default = profile.threads;
+      defaultText = lib.literalExpression "the profile's";
+      description = "FrankenPHP's num_threads.";
+    };
+
+    memoryLimit = mkOption {
+      type = types.str;
+      default = profile.memoryLimit;
+      defaultText = lib.literalExpression "the profile's";
+      description = "PHP's memory_limit, per thread.";
+    };
+
+    oomScoreAdjust = {
+      database = mkOption {
+        type = types.int;
+        default = -500;
+        description = "OOMScoreAdjust of mysql: under memory pressure the kernel kills PHP, never the database.";
+      };
+      php = mkOption {
+        type = types.int;
+        default = 300;
+        description = "OOMScoreAdjust of frankenphp, wordpress-migrate and wordpress-cron.";
+      };
     };
 
     stateDir = mkOption {
       type = types.path;
       default = "/var/lib/wordpress";
-      description = "State directory: holds the document root, uploads, secrets and Caddy certs.";
+      description = "Caddy's data, HOME, wp-cli's cache and the migrate snapshots. Never served.";
+    };
+
+    uploadsDir = mkOption {
+      type = types.path;
+      default = site.uploadsDir or "${cfg.stateDir}/uploads";
+      defaultText = lib.literalExpression "package.passthru.wordpressNix.uploadsDir";
+      description = ''
+        The writable uploads directory web/app/uploads links to (fixed when the
+        package is built). Served by file_server only.
+      '';
+    };
+
+    denyUploadPaths = mkOption {
+      type = types.listOf types.str;
+      default = [
+        "woocommerce_uploads"
+        "gravity_forms"
+        "wpo_wcpdf*"
+        "wc-logs"
+        "fluentform/temp"
+      ];
+      description = ''
+        Directories under uploads HTTP never reaches (403): private downloads
+        and form files their plugins hand out through PHP. `*` matches within
+        one path segment.
+      '';
+    };
+
+    localUploadPrefixes = mkOption {
+      type = types.listOf types.str;
+      default = [
+        "cwicly"
+        "fonts"
+        "wpcodebox"
+        "fluentform"
+      ];
+      description = ''
+        Directories under uploads that are not attachments and stay on
+        uploadsDir: an old /wp-content/uploads/<prefix>/ URL moves to
+        /app/uploads/<prefix>/, where every other old uploads URL moves to the
+        media bucket (settings.S3_PUBLIC_URL).
+      '';
     };
 
     user = mkOption {
       type = types.str;
       default = "wordpress";
-      description = "User the service runs as.";
+      description = "User every unit but mysql runs as.";
     };
     group = mkOption {
       type = types.str;
       default = "wordpress";
-      description = "Group the service runs as.";
+      description = "Its group: a peer that connects to socketPath joins it.";
     };
 
     domain = mkOption {
       type = types.str;
       default = "";
       example = "blog.example.com";
-      description = "Public FQDN. Set → Caddy auto-HTTPS (ACME) on :443 + :80 redirect; empty → bind :80 only.";
+      description = "Public FQDN. Set: Caddy terminates TLS itself (ACME) on :443 and :80. Empty: :80 only (or socketPath).";
     };
 
     acmeEmail = mkOption {
       type = types.str;
       default = "";
-      description = "ACME account email (required when domain is set).";
+      description = "ACME account email (required with domain).";
     };
 
     socketPath = mkOption {
@@ -813,231 +700,162 @@ in
       default = "";
       example = "/run/wordpress/wp.sock";
       description = ''
-        Serve over this unix socket instead of a TCP port. Set → Caddy binds
-        only the socket (no :80, no :443, no ACME) and nothing listens on the
-        network; empty → the `domain`/`:80` behaviour above.
-
-        Must live in its own directory, which this module creates 0750 owned by
-        `user` — Caddy runs as that user and could not create a socket directly
-        in root-owned /run.
-
-        Intended for a co-located reverse proxy or tunnel connector, which must
-        be able to open the socket — see `socketMode`. In this mode the client
-        IP is taken from `CF-Connecting-IP`, since a unix socket has no peer
-        address.
+        Serve over this unix socket instead of a TCP port, for a tunnel
+        connector in the same container. Nothing then listens on the network,
+        and PHP takes the client's address from CF-Connecting-IP and its
+        scheme from X-Forwarded-Proto. Must be in its own directory.
       '';
     };
 
     socketMode = mkOption {
       type = types.str;
       default = "0660";
-      example = "0666";
-      description = ''
-        Permission mode for `socketPath`. Caddy's own default is 0200 (u=w),
-        which no other process could open, so this is set explicitly. 0660 pairs
-        with putting the peer process in this service's group.
-      '';
+      description = "Mode of socketPath (Caddy's own default, 0200, opens to nobody).";
     };
 
     openFirewall = mkOption {
       type = types.bool;
       default = true;
-      description = "Open :80 (and :443 tcp+udp when a domain is set) in the firewall.";
+      description = "Open :80 (and :443 with domain). Socket mode opens nothing.";
     };
 
-    source = {
-      type = mkOption {
-        type = types.enum [
-          "state"
-          "git"
-          "managed"
-        ];
-        default = "state";
-        description = ''
-          `state` = mutable core in ${docroot}; `git` = read-only source.path
-          document root; `managed` = pinned store core (symlinked) + mutable,
-          git-seeded wp-content with file mods allowed (the split-plane admin
-          backend).
-        '';
-      };
-      version = mkOption {
-        type = types.str;
-        default = "latest";
-        description = "WordPress version to download in state mode (`wp core download --version`).";
-      };
-      path = mkOption {
-        type = types.nullOr types.path;
-        default = null;
-        example = lib.literalExpression "inputs.my-wordpress";
-        description = "Git mode: a store path / flake input that is the WordPress document root (read-only).";
-      };
-      siteRepo = {
-        url = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          example = "git@github.com:Avunu/site-example.git";
-          description = "Managed mode: the site repo cloned into the WP root on first boot (gitium pushes back to it).";
-        };
-        branch = mkOption {
-          type = types.str;
-          default = "main";
-          description = "Managed mode: the branch to seed from.";
-        };
-        deployKeyFile = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          example = "/run/agenix/site-git-deploy-key";
-          description = ''
-            Runtime path to an SSH deploy key (never in the Nix store) used
-            for the initial clone and, via GIT_KEY_FILE, by gitium's pushes.
-          '';
-        };
-      };
-      manageWpConfig = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Generate and install wp-config.php. Set false if the git source ships its own.";
-      };
-    };
-
-    saltsFile = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      example = "/run/agenix/site-wp-salts";
+    environmentFiles = mkOption {
+      # Strings, not paths: a path literal would be copied into the store.
+      type = types.listOf (types.strMatching "/.+");
+      default = [ ];
+      example = [ "/run/secrets/env" ];
       description = ''
-        Runtime path to the authentication salts (the 8-define block, without
-        the PHP opening tag) — shared with the frontend plane's
-        WORDPRESS_SALTS secret. Unset: salts are generated once locally.
+        Files of KEY='value' lines appended to Bedrock's environment, after
+        `settings`: the secrets (the eight salts, S3_KEY and S3_SECRET, mail
+        tokens). Read through systemd's LoadCredential, so they may be root's
+        0400 files; never copied to the store.
       '';
     };
 
+    settings = mkOption {
+      description = ''
+        Bedrock's environment, non-secret (RFC 42): written to
+        /run/wordpress/bedrock.env, which `''${package}/.env` links to.
+        Strings are single-quoted, booleans and integers bare, null leaves a
+        name out. Lands in the store: secrets go in `environmentFiles`.
+
+        Besides Bedrock's own names, the platform reads WC_LOG_HANDLER,
+        S3_DIRECT_UPLOADS and WP_MAX_MEMORY_LIMIT (mu-plugins/platform-environment.php),
+        and wp-cloud-files the S3_* names.
+      '';
+      default = { };
+      type = types.submodule (
+        { config, ... }:
+        {
+          freeformType = types.attrsOf (
+            types.nullOr (
+              types.oneOf [
+                types.bool
+                types.int
+                types.str
+              ]
+            )
+          );
+          options = {
+            WP_ENV = mkOption {
+              type = types.str;
+              default = "production";
+              description = "Bedrock's environment: production, staging or development.";
+            };
+            WP_HOME = mkOption {
+              type = types.str;
+              default = if cfg.domain != "" then "https://${cfg.domain}" else "http://localhost";
+              defaultText = lib.literalExpression ''if domain != "" then "https://''${domain}" else "http://localhost"'';
+              description = "The site's URL.";
+            };
+            WP_SITEURL = mkOption {
+              type = types.str;
+              default = "${config.WP_HOME}/wp";
+              defaultText = lib.literalExpression ''"''${WP_HOME}/wp"'';
+              description = "Where core lives: Bedrock's web/wp.";
+            };
+            DB_NAME = mkOption {
+              type = types.str;
+              default = cfg.database.name;
+              defaultText = lib.literalExpression "database.name";
+              description = "Database name.";
+            };
+            DB_USER = mkOption {
+              type = types.str;
+              default = cfg.database.user;
+              defaultText = lib.literalExpression "database.user";
+              description = "Database user.";
+            };
+            DB_PASSWORD = mkOption {
+              type = types.str;
+              default = "";
+              description = "Empty: unix_socket auth. An external database's password goes in environmentFiles.";
+            };
+            DB_HOST = mkOption {
+              type = types.str;
+              default = "localhost:${cfg.database.socket}";
+              defaultText = lib.literalExpression ''"localhost:''${database.socket}"'';
+              description = "Database host; host:socket for a unix socket.";
+            };
+            DISABLE_WP_CRON = mkOption {
+              type = types.bool;
+              default = true;
+              description = "The wordpress-cron timer runs cron; /wp-cron.php is not served.";
+            };
+            WP_TEMP_DIR = mkOption {
+              type = types.str;
+              default = "/tmp";
+              description = "Each unit's own PrivateTmp.";
+            };
+            TMPDIR = mkOption {
+              type = types.str;
+              default = "/tmp";
+              description = "Each unit's own PrivateTmp.";
+            };
+            WC_LOG_HANDLER = mkOption {
+              type = types.nullOr types.str;
+              default = "WC_Log_Handler_DB";
+              description = "WooCommerce's logs go to the database, not to files under uploads.";
+            };
+            WP_MAX_MEMORY_LIMIT = mkOption {
+              type = types.str;
+              default = profile.maxMemoryLimit;
+              defaultText = lib.literalExpression "the profile's";
+              description = "memory_limit of admin and image requests (the admin_memory_limit filter).";
+            };
+            WORDPRESS_NIX_PRODUCTION_ONLY_PLUGINS = mkOption {
+              type = types.str;
+              default = concatStringsSep "," (site.productionOnlyPlugins or [ ]);
+              defaultText = lib.literalExpression "package.passthru.wordpressNix.productionOnlyPlugins";
+              description = "Plugin directories loaded only when WP_ENV is production.";
+            };
+            WORDPRESS_NIX_DEVELOPMENT_ONLY_PLUGINS = mkOption {
+              type = types.str;
+              default = concatStringsSep "," (site.developmentOnlyPlugins or [ ]);
+              defaultText = lib.literalExpression "package.passthru.wordpressNix.developmentOnlyPlugins";
+              description = "Plugin directories loaded only when WP_ENV is development.";
+            };
+          };
+        }
+      );
+    };
+
     database = {
-      type = mkOption {
-        type = types.enum [
-          "mysql"
-          "turso"
-        ];
-        default = "mysql";
-        description = ''
-          `mysql` = MariaDB/MySQL (local or external); `turso` = a Turso database
-          over SQL-over-HTTP, optionally reading from a locally published
-          snapshot (see `database.turso.snapshotPath`).
-        '';
+      createLocally = mkOption {
+        type = types.bool;
+        default = true;
+        description = "A local MariaDB with unix_socket auth: no password anywhere.";
       };
-      turso = {
-        url = mkOption {
-          type = types.str;
-          default = "";
-          example = "libsql://site-org.turso.io";
-          description = ''
-            The Turso database URL. `libsql://` and `turso://` are accepted and
-            mean HTTPS.
-
-            Per-statement latency is what a query-heavy admin page multiplies, so
-            co-locate the primary: a local `tursodb --sync-server` answers in
-            ~156 µs where a WAN round trip would not.
-          '';
-        };
-        tokenFile = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          example = "/run/agenix/site-turso-token";
-          description = "Runtime path to the Turso auth token. Unset for a server that needs none.";
-        };
-        snapshotPath = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          example = "/var/lib/wordpress/database/snapshot.db";
-          description = ''
-            Read from a locally published SQLite snapshot instead of the primary,
-            with writes still going to the primary. This is the front end's mode:
-            rendering a page never touches the network.
-
-            Setting this starts `wordpress-turso-publisher`, which keeps the
-            snapshot current. Reads are then behind the primary by at most
-            `publishIntervalSeconds` — a real semantic change, and one to document
-            per site. It composes with page caching, which already means the public
-            site lags the database by a bounded amount.
-
-            Leave null on the control plane, where wp-admin must read its own
-            writes immediately.
-          '';
-        };
-        embedded = mkOption {
-          type = types.bool;
-          default = false;
-          description = ''
-            Read from an embedded replica the PHP process holds open itself,
-            through the plugin's `wp_turso` extension, with writes still going to
-            the primary. No publisher process and no snapshot copy: the replica is
-            pulled from the primary every `pullIntervalMs`, and again at the end
-            of any request that wrote, so a redirect after a save finds what was
-            saved. Reads run at local-SQLite speed on every plane -- the admin
-            plane included, which a snapshot cannot offer.
-
-            One process owns the replica file (FrankenPHP's one process, many
-            threads). Mutually exclusive with `snapshotPath`.
-          '';
-        };
-        pullIntervalMs = mkOption {
-          type = types.int;
-          default = 1000;
-          description = ''
-            Milliseconds between the embedded replica's pulls from the primary:
-            the staleness bound for reads, at one small round trip each.
-          '';
-        };
-        replicaPath = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          example = "/var/lib/wordpress/turso/replica.db";
-          description = ''
-            Where the embedded replica lives: the publisher's private one with
-            `snapshotPath`, the PHP process's own with `embedded`. Defaults to
-            `turso/replica.db` under the state directory.
-
-            Only its owner may touch it: Turso holds an exclusive lock on a live
-            replica and coordinates its WAL through a file SQLite does not
-            understand, so nothing else can read it. Keeping it across restarts is
-            what keeps each pull incremental.
-          '';
-        };
-        publishIntervalSeconds = mkOption {
-          type = types.int;
-          default = 10;
-          description = ''
-            Seconds between snapshot publishes. This sets both the staleness
-            window and the steady-state cost: each cycle rewrites the whole
-            snapshot, which took 10–15 ms for a 467 KB database.
-          '';
-        };
-        requestTimeoutMs = mkOption {
-          type = types.int;
-          default = 20000;
-          description = "HTTP request timeout for Turso calls.";
-        };
-      };
-      createLocally = mkEnableOption "a local MariaDB (passwordless unix_socket auth)";
       package = mkOption {
         type = types.package;
         default = pkgs.mariadb;
         defaultText = lib.literalExpression "pkgs.mariadb";
-        description = "MariaDB package for the local database.";
-      };
-      host = mkOption {
-        type = types.str;
-        default = "127.0.0.1";
-        description = "Database host (external DB only).";
-      };
-      port = mkOption {
-        type = types.port;
-        default = 3306;
-        description = "Database TCP port (external DB only).";
+        description = "MariaDB: the server, and the client the migrate unit uses.";
       };
       socket = mkOption {
         type = types.str;
         default = "/run/mysqld/mysqld.sock";
-        description = "Unix socket path (local DB only).";
+        description = "The server's unix socket.";
       };
       name = mkOption {
         type = types.str;
@@ -1046,39 +864,33 @@ in
       };
       user = mkOption {
         type = types.str;
-        default = "wordpress";
-        description = "Database user. For local (socket) auth this must equal `user`.";
-      };
-      passwordFile = mkOption {
-        type = types.nullOr types.path;
-        default = null;
-        description = "File containing the DB password (external DB). Injected via systemd LoadCredential.";
+        default = cfg.user;
+        defaultText = lib.literalExpression "user";
+        description = "Database user. With createLocally it must be `user` (unix_socket auth).";
       };
     };
 
-    tablePrefix = mkOption {
-      type = types.str;
-      default = "wp_";
-      description = "WordPress table prefix.";
+    migrate = base.nixos.migrate.options {
+      what = "`wp core update-db` (and `wp wc update` when WooCommerce is active)";
+      dumpTool = "mysqldump";
+      where = "in stateDir/snapshots";
     };
 
-    cron.enable = mkOption {
-      type = types.bool;
-      default = cfg.plane.role != "public";
-      defaultText = lib.literalExpression ''plane.role != "public"'';
-      description = ''
-        Run wp-cron on a systemd timer (WordPress' own cron is disabled).
-
-        Off by default on the public plane: the admin plane owns cron, so
-        Action Scheduler, scheduled posts and transactional email all run in one
-        place, with file modifications and the full plugin set available.
-      '';
-    };
-
-    debug = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Enable WP_DEBUG and PHP display_errors.";
+    cron = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Run due wp-cron events every minute on a timer (a preview turns it off).";
+      };
+      randomizedDelaySec = mkOption {
+        type = types.str;
+        default = "0";
+        example = "20s";
+        description = ''
+          The timer's RandomizedDelaySec: spreads many sites' cron runs on one
+          node apart. Off until measurements show they line up.
+        '';
+      };
     };
 
     logging = {
@@ -1086,170 +898,19 @@ in
         type = types.str;
         default = if cfg.domain != "" then cfg.domain else "wordpress";
         defaultText = lib.literalExpression ''if domain != "" then domain else "wordpress"'';
-        example = "blog.example.com";
-        description = ''
-          Site name stamped on every journald entry this module's units write,
-          as the `APP_SITE` field (`APP_SERVICE` names the unit's role: web,
-          init, cron, publisher, db).
-        '';
+        description = "APP_SITE on every journal entry of this module's units.";
       };
       accessLog = mkOption {
         type = types.bool;
         default = true;
-        description = "Log every HTTP request to journald as one JSON line (Caddy's access log).";
+        description = "One JSON line per request (Caddy's access log, which redacts Cookie and Authorization).";
       };
-    };
-
-    gitium = {
-      package = mkOption {
-        type = types.nullOr types.path;
-        default = gitiumSrc;
-        defaultText = lib.literalExpression "the flake's pinned gitium input";
-        description = ''
-          The gitium plugin directory, installed into wp-content/plugins in
-          managed mode and activated by the platform-gitium mu-plugin rather
-          than through the database — so the site repo never carries it, never
-          commits it (its .gitignore excludes it), and the platform owns its
-          version.
-
-          null disables it, as does any source mode other than managed.
-          Defaults to the flake's pinned input, so it is null when the module
-          file is imported directly rather than through nixosModules.
-        '';
-      };
-
-      merge.enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = ''
-          Reconcile with the site's git remote on a timer.
-
-          gitium only acts on wp-admin's own events: it commits and pushes what
-          an administrator changes, and nothing pulls. Without this, a commit
-          pushed by a developer — or by CI — would never reach the site, and the
-          two would diverge until someone noticed.
-
-          Upstream's answer is a webhook, which means an unauthenticated PHP
-          endpoint and, behind an identity proxy, an explicit bypass carved
-          through it for a path that cannot present credentials. A timer
-          calling gitium's own merge-and-push needs neither, so the admin plane
-          keeps a single way in.
-
-          Ignored unless gitium is installed (managed mode).
-        '';
-      };
-
-      merge.interval = mkOption {
-        type = types.str;
-        default = "5min";
-        example = "1min";
-        description = "How often to reconcile (systemd time span).";
-      };
-    };
-
-    muPlugins = mkOption {
-      type = types.listOf types.path;
-      default = [ ../mu-plugins ];
-      defaultText = lib.literalExpression "[ ../mu-plugins ]";
-      description = "Must-use plugin directories copied into wp-content/mu-plugins (state mode).";
-    };
-
-    plane = {
-      role = mkOption {
-        type = types.enum [
-          "single"
-          "public"
-          "admin"
-        ];
-        default = "single";
-        example = "public";
-        description = ''
-          Which half of a split-plane site this instance serves. Both halves
-          share one database; only their HTTP surface and write posture differ.
-
-          `single` — one instance serves everything (the default: nothing below
-            applies and behaviour is unchanged).
-          `public` — the read-only public face. No administration surface
-            reaches PHP, file modifications and wp-cron are off, and privileged
-            users cannot authenticate. Ordinary visitor writes — checkout,
-            donations, comments, form submissions — still work.
-          `admin` — the private writable face: the full wp-admin on `adminUrl`
-            behind an identity proxy, owning wp-cron and the git working tree.
-        '';
-      };
-
-      publicUrl = mkOption {
-        type = types.str;
-        default = "";
-        example = "https://example.com";
-        description = ''
-          Absolute URL of the public site, scheme included. Becomes WP_HOME on
-          both planes, so permalinks and outgoing email always name the real
-          site even when generated from the admin plane.
-        '';
-      };
-
-      adminUrl = mkOption {
-        type = types.str;
-        default = "";
-        example = "https://example.avunu.io";
-        description = ''
-          Absolute URL of the private admin face, scheme included. Becomes
-          WP_SITEURL on the admin plane, so wp-admin and wp-login live there,
-          and is where the public plane redirects administration requests.
-        '';
-      };
-
-      allowLogin = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          Public plane only: keep /wp-login.php reachable. Needed by sites with
-          visitor accounts — membership, social login, a WooCommerce "my
-          account" password reset. Privileged users are still refused by
-          platform-public-plane.php, so this widens the brute-force surface but
-          not the privilege surface. Off → /wp-login.php redirects to adminUrl.
-        '';
-      };
-
-      excludePlugins = mkOption {
-        type = types.listOf types.str;
-        default =
-          if cfg.plane.role == "public" then
-            [
-              "jwt-auth"
-              "gitium"
-            ]
-          else
-            [ ];
-        defaultText = lib.literalExpression ''if plane.role == "public" then [ "jwt-auth" "gitium" ] else [ ]'';
-        description = ''
-          Plugin directory names dropped from `active_plugins` on this plane
-          only, without touching the database (platform-environment.php), so one
-          shared database can serve both planes with different plugin sets.
-
-          The public-plane default is load-bearing. jwt-auth refuses password
-          authentication on every path including XML-RPC and application
-          passwords, which would lock out exactly the visitor accounts the
-          public plane exists to serve; gitium needs a writable working tree and
-          a `chmod +x` on its own directory, and bails out here anyway.
-        '';
-      };
-    };
-
-    configExtra = mkOption {
-      type = types.lines;
-      default = "";
-      description = "Extra PHP appended to the generated wp-config.php.";
     };
   };
 
   config = mkIf cfg.enable {
-    # The project's binary cache: the optimized PHP and the native extensions, built by
-    # .github/workflows/cache.yml. Adding a substituter is a trust decision: whoever holds
-    # this cache's signing key can put any store path on this host. The keypair is held by
-    # Cachix, so no private key lives in this repository. Priority 41 sits behind
-    # cache.nixos.org (40). Same key as flake.nix's nixConfig; keep them equal.
+    # The project's binary cache: the optimized PHP builds. Priority 41 sits
+    # behind cache.nixos.org. Same key as flake.nix's nixConfig.
     nix.settings = {
       substituters = [ "https://wordpress-nix.cachix.org?priority=41" ];
       trusted-public-keys = [
@@ -1257,87 +918,34 @@ in
       ];
     };
 
-    assertions = [
+    assertions = sockets.assertions ++ [
       {
-        assertion = cfg.source.type != "git" || cfg.source.path != null;
-        message = "services.wordpress-nix: source.type = \"git\" requires source.path.";
+        assertion = site ? envFile;
+        message = "services.wordpress-nix.package must be a lib.mkBedrockSite package (it has no passthru.wordpressNix).";
+      }
+      {
+        assertion = (site.envFile or envFile) == envFile;
+        message = "services.wordpress-nix: the package's .env links to ${site.envFile or "?"}, but this module writes ${envFile}; build it with mkBedrockSite's default envFile.";
+      }
+      {
+        assertion = (site.uploadsDir or cfg.uploadsDir) == cfg.uploadsDir;
+        message = "services.wordpress-nix: uploadsDir is ${cfg.uploadsDir}, but the package's web/app/uploads links to ${site.uploadsDir or "?"}.";
       }
       {
         assertion = cfg.domain == "" || cfg.acmeEmail != "";
-        message = "services.wordpress-nix: setting `domain` (enables ACME) requires `acmeEmail`.";
+        message = "services.wordpress-nix: domain (ACME) requires acmeEmail.";
       }
       {
         assertion = !viaSocket || cfg.domain == "";
-        message = "services.wordpress-nix: socketPath and domain are mutually exclusive — ACME cannot terminate TLS on a unix socket. Serve over the socket and let the proxy or tunnel in front handle TLS.";
-      }
-      {
-        # Caddy runs as cfg.user and has to create the socket, so its directory
-        # must be one this service owns. /run itself is 0755 root:root.
-        assertion =
-          !viaSocket || (lib.hasPrefix "/" cfg.socketPath && socketDir != "/run" && socketDir != "/");
-        message =
-          "services.wordpress-nix: socketPath must be an absolute path inside its own directory"
-          + " (e.g. /run/wordpress/wp.sock), not directly in /run — Caddy runs as"
-          + " ${cfg.user} and cannot create a socket in a root-owned directory.";
+        message = "services.wordpress-nix: socketPath and domain are mutually exclusive: TLS terminates in front of a socket.";
       }
       {
         assertion = !dbLocal || cfg.database.user == cfg.user;
-        message = "services.wordpress-nix: local DB uses unix_socket auth, so database.user must equal user.";
+        message = "services.wordpress-nix: a local database uses unix_socket auth, so database.user must equal user.";
       }
       {
-        assertion = !remoteSqlite || sqliteAnywhere != null;
-        message = "services.wordpress-nix: database.type = \"${cfg.database.type}\" requires consuming the module via the flake's nixosModules (it injects the wordpress-sqlite-anywhere flake).";
-      }
-      {
-        assertion = !remoteSqlite || lib.versionAtLeast cfg.php.version "8.5";
-        message = "services.wordpress-nix: database.type = \"${cfg.database.type}\" needs php = pkgs.php85 or newer; the WordPress SQLite Anywhere plugin requires PHP 8.5.";
-      }
-      {
-        assertion = !turso || cfg.database.turso.url != "";
-        message = "services.wordpress-nix: database.type = \"turso\" requires database.turso.url.";
-      }
-      {
-        assertion = !turso || !cfg.database.createLocally;
-        message = "services.wordpress-nix: database.type = \"turso\" is remote-only; disable database.createLocally.";
-      }
-      {
-        assertion = !(tursoEmbedded && tursoSnapshot);
-        message = "services.wordpress-nix: database.turso.embedded and database.turso.snapshotPath are two ways to read locally; choose one.";
-      }
-      {
-        assertion = !tursoEmbedded || cfg.database.turso.pullIntervalMs > 0;
-        message = "services.wordpress-nix: database.turso.pullIntervalMs must be positive.";
-      }
-      {
-        assertion = !tursoSnapshot || cfg.database.turso.publishIntervalSeconds > 0;
-        message = "services.wordpress-nix: database.turso.publishIntervalSeconds must be at least 1.";
-      }
-      {
-        assertion = !managed || cfg.source.manageWpConfig;
-        message = "services.wordpress-nix: managed mode generates wp-config.php into the store core; manageWpConfig must stay true.";
-      }
-      {
-        assertion = !publicPlane || cfg.plane.publicUrl != "";
-        message = "services.wordpress-nix: plane.role = \"public\" requires plane.publicUrl — it becomes both WP_HOME and WP_SITEURL.";
-      }
-      {
-        assertion = !publicPlane || cfg.plane.adminUrl != "";
-        message = "services.wordpress-nix: plane.role = \"public\" requires plane.adminUrl — administration requests are redirected there.";
-      }
-      {
-        assertion = !adminPlane || cfg.plane.adminUrl != "";
-        message = "services.wordpress-nix: plane.role = \"admin\" requires plane.adminUrl — it becomes WP_SITEURL.";
-      }
-      {
-        assertion = !publicPlane || cfg.source.type == "git";
-        message =
-          "services.wordpress-nix: plane.role = \"public\" requires source.type = \"git\" — the public plane serves an"
-          + " immutable store docroot (lib/mk-site-docroot.nix builds one). state mode would let core self-update and"
-          + " managed mode keeps wp-content writable, neither of which a read-only public face should do.";
-      }
-      {
-        assertion = !publicPlane || !cfg.database.createLocally;
-        message = "services.wordpress-nix: plane.role = \"public\" shares the admin plane's database; set database.host/passwordFile instead of createLocally.";
+        assertion = badSettings == [ ];
+        message = "services.wordpress-nix.settings: ${concatStringsSep ", " badSettings} hold a single quote or a newline, which a .env single-quoted value cannot.";
       }
     ];
 
@@ -1350,219 +958,158 @@ in
     };
     users.groups = mkIf (cfg.group == "wordpress") { wordpress = { }; };
 
-    systemd.tmpfiles.rules = lib.unique ([
-      "d ${cfg.stateDir}                     0750 ${cfg.user} ${cfg.group} -"
-      "d ${docroot}                          0750 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.stateDir}/caddy               0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.stateDir}/caddy/data          0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.stateDir}/caddy/config        0700 ${cfg.user} ${cfg.group} -"
-      "d ${docroot}/wp-content               0750 ${cfg.user} ${cfg.group} -"
-      "d ${docroot}/wp-content/uploads       0750 ${cfg.user} ${cfg.group} -"
-      "d ${docroot}/wp-content/cache         0750 ${cfg.user} ${cfg.group} -"
-      "d ${docroot}/wp-content/upgrade       0750 ${cfg.user} ${cfg.group} -"
-    ]
-    # These two go through one formatter so lib.unique collapses them when the
-    # socket lives in /run/wordpress alongside the salts.
-    ++ optional (cfg.saltsFile != null) (mkRuntimeDir "/run/wordpress")
-    # Caddy creates the socket here and owns the directory, so 0750 is enough:
-    # a peer connector only needs traversal plus write on the 0660 socket.
-    ++ optional viaSocket (mkRuntimeDir socketDir));
+    systemd.tmpfiles.rules = lib.unique (
+      [
+        "d ${cfg.stateDir}              0750 ${cfg.user} ${cfg.group} -"
+        "d ${cfg.stateDir}/caddy        0700 ${cfg.user} ${cfg.group} -"
+        "d ${cfg.stateDir}/caddy/data   0700 ${cfg.user} ${cfg.group} -"
+        "d ${cfg.stateDir}/caddy/config 0700 ${cfg.user} ${cfg.group} -"
+        "d ${cfg.uploadsDir}            0750 ${cfg.user} ${cfg.group} -"
+        "d ${runtimeDir} 0750 ${cfg.user} ${cfg.group} -"
+      ]
+      ++ sockets.tmpfiles
+    );
 
     systemd.services.wordpress-init = {
-      description = "Initialize WordPress runtime state";
+      description = "Write Bedrock's environment";
       wantedBy = [ "multi-user.target" ];
-      before = [ "wordpress.service" ];
-      after = optional dbLocal "mysql.service";
-      requires = optional dbLocal "mysql.service";
-      path = [
-        wpCli
-        pkgs.coreutils
-        pkgs.gnused
-        (cfg.database.package.client or cfg.database.package)
-      ]
-      ++ gitPath;
-      environment = serviceEnv;
+      before = [
+        "frankenphp.service"
+        "wordpress-migrate.service"
+        "wordpress-cron.service"
+      ];
+      # A new setting, or a new list of environmentFiles, rewrites the file on
+      # the next switch; a secret rewritten in place (agenix decrypts to the
+      # same path) does through wordpress-env.path. Either way the restart
+      # reaches frankenphp and migrate through their Requires=.
+      restartTriggers = [ settingsFile ] ++ cfg.environmentFiles;
+      path = [ pkgs.coreutils ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         User = cfg.user;
         Group = cfg.group;
-        ReadWritePaths = [ cfg.stateDir ] ++ optional (cfg.saltsFile != null) "/run/wordpress";
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        LoadCredential = optional (
-          cfg.database.passwordFile != null
-        ) "db_password:${cfg.database.passwordFile}";
+        LoadCredential = envCredentials;
         ExecStart = initScript;
       }
-      // logFields "init" "wordpress-init";
+      // logFields "init" "wordpress-init"
+      // harden {
+        inherit readWritePaths;
+        addressFamilies = [ "AF_UNIX" ];
+      };
     };
 
-    systemd.services.wordpress = {
+    # A secret rotated at the same path changes no unit, so nothing on the
+    # switch restarts wordpress-init; this watches the files instead. A path
+    # unit only starts its unit, and wordpress-init is already active, hence
+    # the restart in between.
+    systemd.paths.wordpress-env = mkIf (cfg.environmentFiles != [ ]) {
+      description = "Watch Bedrock's environmentFiles";
+      wantedBy = [ "multi-user.target" ];
+      pathConfig = {
+        PathChanged = cfg.environmentFiles;
+        Unit = "wordpress-env.service";
+      };
+    };
+    systemd.services.wordpress-env = mkIf (cfg.environmentFiles != [ ]) {
+      description = "Rewrite Bedrock's environment after a secret changed";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.systemd}/bin/systemctl restart wordpress-init.service";
+      };
+    };
+
+    systemd.services.wordpress-migrate = mkIf cfg.migrate.enable {
+      description = "Migrate the WordPress database for this build";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "frankenphp.service" ];
+      after = [ "wordpress-init.service" ] ++ optional dbLocal "mysql.service";
+      requires = [ "wordpress-init.service" ] ++ optional dbLocal "mysql.service";
+      path = phpPath;
+      environment = serviceEnv;
+      # A new build migrates on the switch that deploys it.
+      restartTriggers = [ cfg.package ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = cfg.user;
+        Group = cfg.group;
+        ExecStart = "${flock} ${lockFile} ${getExe migrateScript}";
+        OOMScoreAdjust = cfg.oomScoreAdjust.php;
+      }
+      // logFields "migrate" "wordpress-migrate"
+      // harden { inherit readWritePaths; };
+    };
+
+    systemd.services.frankenphp = {
       description = "WordPress (FrankenPHP)";
       wantedBy = [ "multi-user.target" ];
-      wants = [ "network-online.target" ];
+      wants = [ "network-online.target" ] ++ optional cfg.migrate.enable "wordpress-migrate.service";
+      # Ordered after migrate but not bound to it: a failed migrate is rolled
+      # back, and WordPress serves new code on the old schema until the next
+      # deploy migrates it.
       after = [
         "network-online.target"
         "wordpress-init.service"
       ]
-      ++ optional dbLocal "mysql.service"
-      # The publisher writes its first snapshot in ExecStartPre, so ordering after
-      # it means WordPress never starts without one to read.
-      ++ optional tursoSnapshot "wordpress-turso-publisher.service";
+      ++ optional cfg.migrate.enable "wordpress-migrate.service"
+      ++ optional dbLocal "mysql.service";
       requires = [ "wordpress-init.service" ] ++ optional dbLocal "mysql.service";
-      path = [
-        wpCli
-        (cfg.database.package.client or cfg.database.package)
-      ]
-      ++ gitPath;
+      path = phpPath;
       environment = serviceEnv // {
         XDG_DATA_HOME = "${cfg.stateDir}/caddy/data";
         XDG_CONFIG_HOME = "${cfg.stateDir}/caddy/config";
       };
+      restartTriggers = [ cfg.package ];
       serviceConfig = {
         User = cfg.user;
         Group = cfg.group;
-        WorkingDirectory = docroot;
+        WorkingDirectory = cfg.stateDir;
         ExecStart = "${getExe frankenphp} run --config ${caddyfile} --adapter caddyfile";
-        Restart = "always";
-        RestartSec = "5";
-        # A crash with Restart=always can leave the socket file behind, which
-        # blocks the rebind. Clear it before every start.
+        # A crash can leave the socket file behind, which blocks the rebind.
         ExecStartPre = optional viaSocket "${pkgs.coreutils}/bin/rm -f ${cfg.socketPath}";
-        # Bind :80/:443 without running as root. Socket mode binds no port, so it
-        # needs no capability at all.
-        AmbientCapabilities = optional (!viaSocket) "CAP_NET_BIND_SERVICE";
-        CapabilityBoundingSet = optional (!viaSocket) "CAP_NET_BIND_SERVICE";
-        # ProtectSystem=strict makes the whole hierarchy read-only, so the socket's
-        # directory has to be opened up for Caddy to create the socket in it.
-        ReadWritePaths = [ cfg.stateDir ] ++ optional viaSocket socketDir;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        # NOTE: do NOT set MemoryDenyWriteExecute — opcache JIT needs W^X toggling
-        # and would crash FrankenPHP at startup.
-      }
-      // logFields "web" "wordpress";
-    };
-
-    # The front end's read path. Turso holds an exclusive lock on a live replica
-    # and coordinates its WAL through a file SQLite cannot read, so PHP is handed
-    # a published snapshot instead: pull, VACUUM INTO, rename.
-    systemd.services.wordpress-turso-publisher = mkIf tursoSnapshot {
-      description = "Publish a readable SQLite snapshot of the Turso database";
-      # WordPress must not start before a snapshot exists: without one the drop-in
-      # falls back to serving every read from the primary, which works but is slow.
-      before = [ "wordpress.service" ];
-      wantedBy = [ "wordpress.service" ];
-      wants = [ "network-online.target" ];
-      after = [
-        "network-online.target"
-        "wordpress-init.service"
-      ];
-      requires = [ "wordpress-init.service" ];
-      serviceConfig = {
-        User = cfg.user;
-        Group = cfg.group;
-        # Publish once before the unit counts as started, so wordpress.service --
-        # ordered after this one -- never comes up without a snapshot to read.
-        ExecStartPre = "${tursoPublisherScript} --once";
-        ExecStart = "${tursoPublisherScript} --interval ${toString cfg.database.turso.publishIntervalSeconds}";
         Restart = "always";
         RestartSec = "5";
-        # Publish into the state directory and nowhere else.
-        ReadWritePaths = [
-          cfg.stateDir
-        ]
-        ++ lib.optional (
-          !lib.hasPrefix cfg.stateDir cfg.database.turso.snapshotPath
-        ) (builtins.dirOf cfg.database.turso.snapshotPath);
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        NoNewPrivileges = true;
+        OOMScoreAdjust = cfg.oomScoreAdjust.php;
       }
-      // logFields "publisher" "wordpress-turso-publisher";
-    };
-
-    systemd.services.wordpress-gitium-merge = mkIf (installGitium && cfg.gitium.merge.enable) {
-      description = "Reconcile the site repository (gitium merge and push)";
-      after = [ "wordpress.service" ];
-      requires = [ "wordpress.service" ];
-      path = [
-        wpCli
-        (cfg.database.package.client or cfg.database.package)
-      ]
-      ++ gitPath;
-      environment = serviceEnv;
-      serviceConfig = {
-        Type = "oneshot";
-        User = cfg.user;
-        Group = cfg.group;
-        ReadWritePaths = [ cfg.stateDir ];
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        # platform-gitium.php's reconcile, not gitium_auto_push(): that one
-        # returns early unless the private key is in the `gitium_keypair`
-        # option, and the platform supplies it as a file (GIT_KEY_FILE) rather
-        # than putting a repository write key in a database the read-only plane
-        # can also read. The reconcile still hands the commits to gitium's own
-        # merge-and-push, so the conflict policy stays gitium's.
-        ExecStart = "${getExe wpCli} eval 'wp_platform_gitium_reconcile();' --path=${wpPath}";
-      }
-      // logFields "gitium" "wordpress-gitium-merge";
-    };
-
-    systemd.timers.wordpress-gitium-merge = mkIf (installGitium && cfg.gitium.merge.enable) {
-      description = "Reconcile the site repository periodically";
-      wantedBy = [ "timers.target" ];
-      timerConfig = {
-        OnBootSec = "2min";
-        OnUnitActiveSec = cfg.gitium.merge.interval;
-        AccuracySec = "30s";
-        Unit = "wordpress-gitium-merge.service";
-      };
+      // logFields "web" "frankenphp"
+      // harden (
+        {
+          readWritePaths = readWritePaths ++ sockets.directories;
+        }
+        # :80 and :443 without root. A socket binds no port and needs nothing.
+        // lib.optionalAttrs (!viaSocket) {
+          capabilities = [ "CAP_NET_BIND_SERVICE" ];
+          overrides.AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
+        }
+      );
     };
 
     systemd.services.wordpress-cron = mkIf cfg.cron.enable {
       description = "WordPress scheduled tasks (wp-cron)";
-      after = [ "wordpress.service" ];
-      requires = [ "wordpress.service" ];
-      path = [
-        wpCli
-        (cfg.database.package.client or cfg.database.package)
-      ]
-      ++ gitPath;
+      after = [ "frankenphp.service" ];
+      requires = [ "wordpress-init.service" ];
+      path = phpPath;
       environment = serviceEnv;
       serviceConfig = {
         Type = "oneshot";
         User = cfg.user;
         Group = cfg.group;
-        ReadWritePaths = [ cfg.stateDir ];
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        # --due-now runs the events whose time has come, which is what a cron
-        # replacement does. `--all --due-now` is rejected by wp-cli as
-        # contradictory ("Please use either --due-now or --all"), so every run
-        # exited 1 and nothing scheduled ever fired — invisibly, because the
-        # timer stayed active either way.
-        ExecStart = "${getExe wpCli} cron event run --due-now --path=${wpPath}";
+        # Skips its turn (exit 0) while wordpress-migrate holds the lock.
+        ExecStart = "${flock} --nonblock --conflict-exit-code 0 ${lockFile} ${cronScript}";
+        OOMScoreAdjust = cfg.oomScoreAdjust.php;
       }
-      // logFields "cron" "wordpress-cron";
+      // logFields "scheduler" "wordpress-cron"
+      // harden { inherit readWritePaths; };
     };
 
+    # A oneshot is never started while it runs, so runs cannot overlap.
     systemd.timers.wordpress-cron = mkIf cfg.cron.enable {
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "2min";
         OnUnitActiveSec = "1min";
+        RandomizedDelaySec = cfg.cron.randomizedDelaySec;
         Unit = "wordpress-cron.service";
       };
     };
@@ -1580,14 +1127,20 @@ in
         }
       ];
       settings.mysqld = {
-        character-set-server = "utf8mb4";
-        collation-server = "utf8mb4_unicode_ci";
+        # unix_socket only (DB_HOST is the socket): nothing on the network.
+        skip-networking = mkDefault true;
+        character-set-server = mkDefault "utf8mb4";
+        collation-server = mkDefault "utf8mb4_unicode_ci";
+        innodb_buffer_pool_size = mkDefault profile.innodbBufferPool;
       };
     };
-    # The upstream unit, tagged like this module's own.
-    systemd.services.mysql.serviceConfig = mkIf dbLocal (logFields "db" "mysql");
+    systemd.services.mysql.serviceConfig = mkIf dbLocal (
+      logFields "db" null
+      // {
+        OOMScoreAdjust = cfg.oomScoreAdjust.database;
+      }
+    );
 
-    # Socket mode binds no port, so there is nothing to open.
     networking.firewall = mkIf (cfg.openFirewall && !viaSocket) {
       allowedTCPPorts = [ 80 ] ++ optional (cfg.domain != "") 443;
       allowedUDPPorts = optional (cfg.domain != "") 443;
@@ -1595,12 +1148,8 @@ in
 
     environment.systemPackages = [ wpWrapper ];
 
-    # The generated Caddyfile, for inspection and the flake's logging check.
+    # For inspection and the flake's logging check.
     system.build.wordpressCaddyfile = caddyfile;
-
-    # Likewise the generated wp-config.php. The split-plane posture lives mostly
-    # in constants (WP_HOME vs WP_SITEURL, WP_PLATFORM_PLANE, DISALLOW_FILE_MODS),
-    # so the checks need to be able to read it without booting a VM.
-    system.build.wordpressConfigPhp = wpConfig;
+    system.build.wordpressSettingsEnv = settingsFile;
   };
 }
