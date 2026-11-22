@@ -18,8 +18,9 @@ Author URI: https://avu.nu/
  *   WORDPRESS_NIX_APPLICATION_PASSWORDS     true allows application passwords
  *   WORDPRESS_NIX_ACCESS_ADMIN_PATHS        true: admin and login requests need
  *                                           Cloudflare Access's assertion
- *   WORDPRESS_NIX_HOME_FROM_REQUEST         true, outside production: home and
- *                                           siteurl follow the request's host (a preview)
+ *   WORDPRESS_NIX_HOME_FROM_REQUEST         true, outside production: home, siteurl
+ *                                           and the content, plugin and theme URLs
+ *                                           follow the request's host (a preview)
  *   WORDPRESS_NIX_MAIL_CATCHER              true: a non-production environment
  *                                           whose mail is caught (the dev shell's Mailpit)
  *   WC_LOG_HANDLER, S3_DIRECT_UPLOADS,      constants, when set and not yet defined
@@ -381,6 +382,22 @@ if ( 'production' !== wp_get_environment_type() && wp_platform_env_flag( 'WORDPR
 	$wp_platform_request_home = ( is_ssl() ? 'https://' : 'http://' ) . strtolower( preg_replace( '/[^A-Za-z0-9.:\-\[\]]/', '', (string) wp_unslash( $_SERVER['HTTP_HOST'] ) ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- reduced to host characters.
 	add_filter( 'option_home', static fn() => $wp_platform_request_home, 20 );
 	add_filter( 'option_siteurl', static fn() => $wp_platform_request_home . '/wp', 20 );
+	// Bedrock defines WP_CONTENT_URL (and so the mu-plugin URL) from WP_HOME, the
+	// site's own, before any of this runs: the content, plugin and theme URLs keep
+	// that host unless they are moved onto the request's too.
+	if ( defined( 'WP_HOME' ) && '' !== (string) WP_HOME ) {
+		$wp_platform_rehome = static function ( $url ) use ( $wp_platform_request_home ) {
+			$site = untrailingslashit( (string) WP_HOME );
+			if ( ! is_string( $url ) || ( $url !== $site && ! str_starts_with( $url, $site . '/' ) ) ) {
+				return $url;
+			}
+			return $wp_platform_request_home . substr( $url, strlen( $site ) );
+		};
+		add_filter( 'content_url', $wp_platform_rehome, 20 );
+		add_filter( 'plugins_url', $wp_platform_rehome, 20 );
+		add_filter( 'theme_root_uri', $wp_platform_rehome, 20 );
+		unset( $wp_platform_rehome );
+	}
 	unset( $wp_platform_request_home );
 }
 
