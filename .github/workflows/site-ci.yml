@@ -289,7 +289,7 @@ jobs:
             find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 ! -type l -exec chmod -R u+w {} +
           fi
 
-      # The history: `wordpress-nix audit --base` reads the merge-base's lock and plugins.
+      # The history: `wordpress-nix audit --base-rev` reads the merge-base's lock and plugins.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -399,18 +399,18 @@ jobs:
 
       - name: Wordfence (only what this change introduces fails)
         env:
-          WORDFENCE_API_KEY: ${{ secrets.WORDFENCE_API_KEY }}
+          WORDPRESS_NIX_WORDFENCE_KEY: ${{ secrets.WORDFENCE_API_KEY }}
           BASE: ${{ steps.base.outputs.base }}
         run: |
           set -euo pipefail
-          if [ -z "$WORDFENCE_API_KEY" ]; then
+          if [ -z "$WORDPRESS_NIX_WORDFENCE_KEY" ]; then
             echo "::error::WORDFENCE_API_KEY is not set: store it as an Actions and a Dependabot secret and pass it to site-ci.yml"
             exit 1
           fi
           read -ra override <<< "$NIX_OVERRIDE"
           args=(audit --markdown "$RUNNER_TEMP/audit.md")
           if [ -n "$BASE" ]; then
-            args+=(--base "$BASE")
+            args+=(--base-rev "$BASE")
           fi
           status=0
           nix run "${override[@]}" .#wordpress-nix -- "${args[@]}" || status=$?

@@ -51,7 +51,7 @@ in the loop), squash merges only.
 |---|---|---|
 | `ci / flake` | `[self-hosted, nixos]` | every check of the site flake but `smoke`: `composer-validate`, `vendor-hash`, `build` and any the site adds; no tracked `*.sql`, `auth.json` or `.env`. On a push to `main`, the vendor tree is uploaded to the cache |
 | `ci / smoke` | `[self-hosted, linux, x64, kvm]` | `checks.smoke`: the package in a NixOS VM with MariaDB; `wp core install`, every plugin activated, the theme, `/`, `/wp/wp-login.php`, `/wp-json/`; a read-only code tree; PHP under uploads refused; no PHP warning or permission error |
-| `ci / audit` | `[self-hosted, nixos]`, networked steps | `composer audit --locked --no-dev`; `nix run .#verify-wp-checksums`; `nix run .#wordpress-nix -- audit --base <merge-base>` (Wordfence: only what the change introduces fails) |
+| `ci / audit` | `[self-hosted, nixos]`, networked steps | `composer audit --locked --no-dev`; `nix run .#verify-wp-checksums`; `nix run .#wordpress-nix -- audit --base-rev <merge-base>` (Wordfence: only what the change introduces fails) |
 | `ci / premium-diff` | `[self-hosted, nixos]` | advisory: warnings on `eval`, `base64_decode`, `gzinflate`, `create_function`, `assert($…)`, outbound PHP URLs and long opaque strings that a change adds to committed code |
 
 A pull request from a fork runs on `ubuntu-latest`.
@@ -69,7 +69,7 @@ A pull request from a fork runs on `ubuntu-latest`.
    - `wordpress-nix ci apply-relock-patch`: the patch touches `nix/vendor-hash`
      only, a regular file;
    - `wordpress-nix ci verify-relock` against the PR's merge-base (below);
-   - `wordpress-nix site-verdict`, the decision table.
+   - `wordpress-nix ci verdict`, the decision table.
 
    It pushes `chore(deps): relock vendor hash [dependabot skip]` with the App's
    token, and enables auto-merge for that commit only when the lock is `ok` and
@@ -93,7 +93,7 @@ adds or changes:
 | Package | Its `dist.url` must be |
 |---|---|
 | `wp-plugin/<s>`, `wp-theme/<s>` | `https://downloads.wordpress.org/{plugin,theme}/<s>.<version>.zip` (and the svn source wordpress.org's for `<s>`) |
-| `roots/wordpress-no-content` | `https://downloads.w.org/release/wordpress-<version>-no-content.zip`, with the lock's `shasum` |
+| `roots/wordpress-no-content` | `https://downloads.w.org/release/wordpress-<version>-no-content.zip` (or the same path on downloads.wordpress.org), with the lock's `shasum` |
 | anything else (Packagist) | `https://api.github.com/repos/<o>/<r>/zipball/<ref>` or `https://codeload.github.com/<o>/<r>/legacy.zip/<ref>`, where `<o>/<r>` is `source.url`'s and `<ref>` is `source.reference` |
 
 A mismatch is a `reject`: nothing is pushed and the PR is held. That is a
@@ -106,18 +106,29 @@ Packagist package not on GitHub at all (its source on GitLab or Bitbucket, a
 reads it. So is a package the lock adds or removes. `nix/vendor-hash` must be
 one SRI hash, never `lib.fakeHash`.
 
+It also gives the §6.4 rows the version change decides, read from the base's and
+the head's versions (the first number major, the second minor), as
+`needs-review`: a `roots/wordpress*` minor or major, any major, and a
+`wp-plugin/woocommerce*` minor where the head's `.github/wordpress-nix.json` says
+`woocommerce: true`.
+
 ### The decision table
+
+Every Composer PR is relocked (`verify_relock` then gives the rows the version
+change decides, above), so a major is reviewed on a head whose vendor hash is
+current rather than failing `ci / flake` on a stale one.
 
 | Change | Verdict |
 |---|---|
-| any major | review |
 | `roots/wordpress*` patch | relock, then auto (no cooldown) |
-| `roots/wordpress*` minor | review (until previews smoke-test it) |
+| `roots/wordpress*` minor or major | relock, then review (until previews smoke-test it) |
+| any major | relock, then review |
 | `wp-plugins` group, minor or patch | relock, then auto |
-| `wp-plugin/woocommerce*` minor on a site whose `woocommerce` is true | review |
+| `wp-plugin/woocommerce*` minor on a site whose `woocommerce` is true | relock, then review |
 | `php-libs` group, minor or patch | relock, then auto |
 | `avunu/*` | relock, then auto |
-| an ungrouped Composer update, a new package, a `verify-relock` failure | review |
+| a new or removed package, a package off GitHub | relock, then review |
+| a `verify-relock` reject | held: nothing is pushed |
 | github-actions, `Avunu/wordpress*` | close (moves through the rollout) |
 | github-actions, other | auto |
 
@@ -146,7 +157,7 @@ Dependabot secrets, a run on an App-pushed head only Actions secrets.
 | `APP_ID`, `APP_PRIVATE_KEY` | secret (Actions + Dependabot) | relock-push, auto-merge, update-branches; site-audit's cluster read |
 | `WORDPRESS_NIX_CACHE_READ_TOKEN` | secret (Actions + Dependabot) | every nix job |
 | `WORDPRESS_NIX_CACHE_TOKEN` | secret (Actions only) | `ci / flake` on a push to `main` |
-| `WORDFENCE_API_KEY` | secret (Actions + Dependabot) | `ci / audit`, `vulnerabilities` |
+| `WORDFENCE_API_KEY` | secret (Actions + Dependabot) | `ci / audit`, `vulnerabilities` (as `wordpress-nix audit`'s `WORDPRESS_NIX_WORDFENCE_KEY`) |
 | `WORDPRESS_NIX_CACHE` | variable | `cachix:<name>` before the cluster is live, then `attic:<endpoint>/<cache>` |
 
 Runners are nixos-dev-host's org runners: `[self-hosted, nixos]` for the

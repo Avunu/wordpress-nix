@@ -126,11 +126,11 @@ jobs:
           jq -n '{"selftest-1": {title: "Hello Dolly selftest", software: [{type: "plugin", slug: "hello-dolly",
             affected_versions: {"*": {from_version: "*", from_inclusive: true, to_version: "*", to_inclusive: true}}}]}}' \
             > "$RUNNER_TEMP/feed.json"
-          if nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base "$before"; then
+          if nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base-rev "$before"; then
             echo "::error::audit passed a vulnerable plugin the change added"
             exit 1
           fi
-          nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base HEAD
+          nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base-rev HEAD
 
       # site-ci's `base` step on a head stacked on the bump: relock-push's vendor-hash commit,
       # or update-branches' merge, which CI is dispatched on when there is no App. The base is
@@ -145,10 +145,10 @@ jobs:
           git update-ref refs/remotes/origin/main "$before"
           git -c user.name=selftest -c user.email=selftest@example.org commit -q --allow-empty \
             -m "chore(deps): relock vendor hash [dependabot skip]"
-          nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base HEAD^
+          nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base-rev HEAD^
           base="$(git merge-base refs/remotes/origin/main HEAD)"
           [ "$base" = "$before" ]
-          if nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base "$base"; then
+          if nix run .#wordpress-nix -- audit --feed "$RUNNER_TEMP/feed.json" --base-rev "$base"; then
             echo "::error::audit passed, from a commit stacked on the bump, a vulnerable plugin the bump added"
             exit 1
           fi

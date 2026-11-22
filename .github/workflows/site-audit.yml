@@ -96,10 +96,10 @@ jobs:
       - id: audit
         name: Wordfence against what the site installs
         env:
-          WORDFENCE_API_KEY: ${{ secrets.WORDFENCE_API_KEY }}
+          WORDPRESS_NIX_WORDFENCE_KEY: ${{ secrets.WORDFENCE_API_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "$WORDFENCE_API_KEY" ]; then
+          if [ -z "$WORDPRESS_NIX_WORDFENCE_KEY" ]; then
             echo "::error::WORDFENCE_API_KEY is not set"
             exit 1
           fi

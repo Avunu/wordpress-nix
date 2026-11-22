@@ -16,7 +16,7 @@ name: site-deps
 #                   relock vendor hash [dependabot skip]`, and enables auto-merge when the
 #                   lock is ok and the decision table says relock (or auto, policy `all`);
 #                   else labels the PR needs-review with auto-merge off
-#   auto-merge      every Dependabot PR's verdict (`wordpress-nix site-verdict`, the §6.4
+#   auto-merge      every Dependabot PR's verdict (`wordpress-nix ci verdict`, the §6.4
 #                   table): github-actions bumps auto-merge or close; a Composer PR waits
 #                   for relock-push, or, when there was nothing to relock, auto-merges once
 #                   its own lock passes verify-relock
@@ -285,9 +285,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: echo "sha=$(git merge-base "$BASE_SHA" HEAD)" >> "$GITHUB_OUTPUT"
 
-      # The integration branch: its flake.lock names the wordpress-nix-tools to install, its
-      # wordpress-nix.toml the gates auto-merge waits for, and its .github/wordpress-nix.json
-      # the site's facts the verdict reads.
+      # The integration branch: its flake.lock names the wordpress-nix-tools to install, and
+      # its wordpress-nix.toml the gates auto-merge waits for.
       - name: Base checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -300,7 +299,7 @@ jobs:
       # integration branch's flake.lock pins (never the PR's), every dependency from that
       # revision's py/wordpress_nix_tools/uv.lock by hash, standards-core from
       # Avunu/python-devops-nix at the revision that lock names. Before the App's token.
-      - uses: Avunu/python-devops-nix/.github/actions/standards-install@d3a87609e2fd4510dfe2e11a75f219f589e2659b # python-devops-nix d3a87609e2fd4510dfe2e11a75f219f589e2659b
+      - uses: Avunu/python-devops-nix/.github/actions/standards-install@7391ef964c14e16e6dc29d77bb905274bb4e5774 # python-devops-nix 7391ef964c14e16e6dc29d77bb905274bb4e5774
         with:
           cli: wordpress-nix
           engine-input: wordpress-nix
@@ -338,9 +337,9 @@ jobs:
           MERGE_BASE: ${{ steps.merge-base.outputs.sha }}
         run: wordpress-nix ci verify-relock --base "$MERGE_BASE" --head "$(git write-tree)"
 
-      # The decision table, from the PR's metadata (the job's own token) and the
-      # integration branch's site facts: `relock`, or `auto` (policy `all` lifting a
-      # review), auto-merges after this push, and only when verify-relock said ok.
+      # The decision table, from the PR's metadata (the job's own token): `relock`, or
+      # `auto` (policy `all` lifting a review), auto-merges after this push, and only when
+      # verify-relock said ok (which also gives the §6.4 rows the version change decides).
       - id: meta
         if: github.event.pull_request.user.login == 'dependabot[bot]'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
@@ -359,7 +358,7 @@ jobs:
           DIRECTORY: ${{ steps.meta.outputs.directory }}
         run: |
           set -euo pipefail
-          wordpress-nix site-verdict --ecosystem "$ECOSYSTEM" --update-type "$UPDATE_TYPE" \
+          wordpress-nix ci verdict --ecosystem "$ECOSYSTEM" --update-type "$UPDATE_TYPE" \
             --dependency-group "$GROUP" --dependency-names "$NAMES" --directory "${DIRECTORY:-/}" \
             --policy "$POLICY" \
             --engine-repo "$(jq -r '.nodes[.nodes.root.inputs["wordpress-nix"]].locked | "\(.owner)/\(.repo)"' flake.lock)"
@@ -439,7 +438,7 @@ jobs:
           github-token: ${{ github.token }}
 
       # The integration branch, never the PR: its configuration says which gates are
-      # required, and its .github/wordpress-nix.json whether the site runs WooCommerce.
+      # required.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.integration-branch }}
@@ -457,7 +456,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: Avunu/python-devops-nix/.github/actions/standards-install@d3a87609e2fd4510dfe2e11a75f219f589e2659b # python-devops-nix d3a87609e2fd4510dfe2e11a75f219f589e2659b
+      - uses: Avunu/python-devops-nix/.github/actions/standards-install@7391ef964c14e16e6dc29d77bb905274bb4e5774 # python-devops-nix 7391ef964c14e16e6dc29d77bb905274bb4e5774
         with:
           cli: wordpress-nix
           engine-input: wordpress-nix
@@ -490,7 +489,7 @@ jobs:
           DIRECTORY: ${{ steps.meta.outputs.directory }}
         run: |
           set -euo pipefail
-          wordpress-nix site-verdict --ecosystem "$ECOSYSTEM" --update-type "$UPDATE_TYPE" \
+          wordpress-nix ci verdict --ecosystem "$ECOSYSTEM" --update-type "$UPDATE_TYPE" \
             --dependency-group "$GROUP" --dependency-names "$NAMES" --directory "${DIRECTORY:-/}" \
             --policy "$POLICY" \
             --engine-repo "$(jq -r '.nodes[.nodes.root.inputs["wordpress-nix"]].locked | "\(.owner)/\(.repo)"' flake.lock)"
@@ -607,7 +606,7 @@ jobs:
           persist-credentials: false
 
       # From the integration branch's flake.lock, never a PR's: this job holds a write token.
-      - uses: Avunu/python-devops-nix/.github/actions/standards-install@d3a87609e2fd4510dfe2e11a75f219f589e2659b # python-devops-nix d3a87609e2fd4510dfe2e11a75f219f589e2659b
+      - uses: Avunu/python-devops-nix/.github/actions/standards-install@7391ef964c14e16e6dc29d77bb905274bb4e5774 # python-devops-nix 7391ef964c14e16e6dc29d77bb905274bb4e5774
         with:
           cli: wordpress-nix
           engine-input: wordpress-nix
@@ -640,7 +639,7 @@ jobs:
           ref: ${{ inputs.integration-branch }}
           persist-credentials: false
 
-      - uses: Avunu/python-devops-nix/.github/actions/standards-install@d3a87609e2fd4510dfe2e11a75f219f589e2659b # python-devops-nix d3a87609e2fd4510dfe2e11a75f219f589e2659b
+      - uses: Avunu/python-devops-nix/.github/actions/standards-install@7391ef964c14e16e6dc29d77bb905274bb4e5774 # python-devops-nix 7391ef964c14e16e6dc29d77bb905274bb4e5774
         with:
           cli: wordpress-nix
           engine-input: wordpress-nix
