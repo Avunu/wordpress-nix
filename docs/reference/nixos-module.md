@@ -173,7 +173,9 @@ address from `CF-Connecting-IP` and the scheme from `X-Forwarded-Proto` (a
 - **No mail outside production** (`pre_wp_mail`), unless
   `WORDPRESS_NIX_MAIL_CATCHER=true` (the dev shell's Mailpit).
 - **Previews:** outside production, `WORDPRESS_NIX_HOME_FROM_REQUEST=true` makes
-  home and siteurl follow the request's host.
+  home and siteurl follow the request's host, and the content, plugin and theme
+  URLs too (Bedrock makes `WP_CONTENT_URL` from `WP_HOME`, which stays the
+  site's).
 - **Path-scoped Access:** with `WORDPRESS_NIX_ACCESS_ADMIN_PATHS=true`, an admin
   or login request without Cloudflare Access's assertion header is refused
   (`admin-ajax.php`, `admin-post.php`, `load-styles.php` and `load-scripts.php`
