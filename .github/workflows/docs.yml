@@ -21,6 +21,6 @@ jobs:
   docs:
     permissions:
       contents: read # checkout
-    uses: Avunu/site-docs/.github/workflows/check-docs.yml@b5456555957d4d63a6452c521cc75fad87fcb059 # 2026-10-16
+    uses: Avunu/site-docs/.github/workflows/check-docs.yml@846fea4a15f76a83a0baa646ec9cc1dfebb28a70 # 2026-10-16
     with:
       path: wordpress-nix
