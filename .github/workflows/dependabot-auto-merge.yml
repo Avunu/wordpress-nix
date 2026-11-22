@@ -1,7 +1,7 @@
 name: Dependabot auto-merge
 
-# Dependabot pull requests, through python-devops-nix's reusable workflows (its
-# docs/conventions.md, CI) with their default policy: every one auto-merges, whatever
+# Dependabot pull requests, through Avunu/gitops's reusable workflows with their
+# default policy: every one auto-merges, whatever
 # its ecosystem or update type, major bumps and github-actions bumps included. The gate
 # is the test suite, not the update type: GitHub merges once the branch is mergeable and
 # every *required* status check passes, so a bump that breaks something holds its PR
@@ -11,8 +11,8 @@ name: Dependabot auto-merge
 # mergeable the instant it opens and this merges on nothing.
 #
 # update-branches brings each Dependabot pull request that falls behind `main` up to date,
-# after each push to `main` and daily: `@dependabot rebase` while it has only Dependabot's
-# commits, else the update-branch API.
+# after each push to `main` and daily, through the update-branch API (a conflict is left
+# for a person).
 #
 # The org's GitHub App (the variable AVUNU_CI_APP_ID, or a Dependabot secret of that name,
 # and the secret AVUNU_CI_PRIVATE_KEY) enables auto-merge and updates the branches, so a
@@ -40,7 +40,7 @@ jobs:
     permissions:
       contents: write # gh pr merge --auto
       pull-requests: write # gh pr merge --auto
-    uses: Avunu/python-devops-nix/.github/workflows/dependabot-auto-merge.yml@64a23eede77e3b9fcb2ac1e785dbfcde6fcd1bda # python-devops-nix#52 (unreleased)
+    uses: Avunu/gitops/.github/workflows/dependabot-auto-merge.yml@81c8a8dbb2dee20ab5defab9a4ff9936dba1541d # v1.0.0
     # A Dependabot run sees only Dependabot secrets: the App's ID may be one too.
     secrets:
       APP_ID: ${{ vars.AVUNU_CI_APP_ID || secrets.AVUNU_CI_APP_ID }}
@@ -50,9 +50,9 @@ jobs:
     if: github.event_name != 'pull_request'
     permissions:
       contents: write # update-branch without the App
-      pull-requests: write # comment `@dependabot rebase`, update-branch
+      pull-requests: write # update-branch
       actions: write # without the App, dispatch oci.yml on the new head
-    uses: Avunu/python-devops-nix/.github/workflows/dependabot-update-branches.yml@64a23eede77e3b9fcb2ac1e785dbfcde6fcd1bda # python-devops-nix#52 (unreleased)
+    uses: Avunu/gitops/.github/workflows/dependabot-update-branches.yml@81c8a8dbb2dee20ab5defab9a4ff9936dba1541d # v1.0.0
     with:
       dispatch: oci.yml
     secrets:
