@@ -1,0 +1,18 @@
+# Conventional commits: a site is deployed from main, never released, so the type
+# says what changed, not what version follows.
+style = "conventional"
+allowed_types = [
+{% for t in cfg.commits["allowed-types"] %}
+  {{ t | json_string }},
+{% endfor %}
+]
+subject_length = {{ cfg.commits["subject-length"] }}
+line_length = 0
+subject_capitalized = false
+subject_not_punctuated = true
+imperative_subject = false
+no_wip = true
+no_fixup = true
+merge_commit = false
+# wordpress-nix:local-begin committed
+# wordpress-nix:local-end committed

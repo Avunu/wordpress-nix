@@ -1,0 +1,2 @@
+{% set s = cfg.site %}
+{{ {"slug": slug, "woocommerce": woocommerce, "homeUrl": s["home-url"], "dropPlugins": s["drop-plugins"], "localUploadPrefixes": s["local-upload-prefixes"]} | json }}

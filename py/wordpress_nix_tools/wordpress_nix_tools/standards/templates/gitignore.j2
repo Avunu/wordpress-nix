@@ -1,0 +1,12 @@
+# Never committed (site-ci's ci / flake refuses dumps, auth.json and .env)
+auth.json
+.env
+.env.*
+!.env.example
+*.sql
+*.sql.gz
+# Built by Composer and the site flake, never committed
+/vendor
+web/wp
+web/app/uploads/*
+!web/app/uploads/.gitkeep

@@ -11,6 +11,9 @@ Without either every finding fails.
 
 The feed is ``--feed FILE`` or, with ``WORDPRESS_NIX_WORDFENCE_KEY``, the production
 feed (``https://www.wordfence.com/api/intelligence/v3/vulnerabilities/production``).
+
+``--markdown FILE`` also writes the report as Markdown: site-ci.yml's job summary,
+and the body of site-audit.yml's "Vulnerable packages" issue.
 """
 
 import argparse
@@ -223,6 +226,27 @@ def _line(f: Finding) -> str:
     return f"{s.kind} {s.slug} {s.version} [{s.where}]: {f.title} — CVSS {f.cvss}{fix} ({f.id})"
 
 
+def markdown(introduced: list[Finding], existing: list[Finding]) -> str:
+    """The report as a Markdown table, the findings this change introduced first."""
+    if not introduced and not existing:
+        return "No known vulnerability in what the site installs.\n"
+    lines = [
+        f"{len(introduced)} introduced, {len(existing)} pre-existing.",
+        "",
+        "| | Software | Version | Where | Vulnerability | CVSS | Fixed in |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for status, findings in (("**new**", introduced), ("existing", existing)):
+        for f in findings:
+            s = f.software
+            title = f.title.replace("|", "\\|")
+            fixed = ", ".join(f.patched) or "no fix"
+            lines.append(
+                f"| {status} | {s.kind} `{s.slug}` | {s.version} | `{s.where}` | {title} ({f.id}) | {f.cvss} | {fixed} |"
+            )
+    return "\n".join(lines) + "\n"
+
+
 def run(args: argparse.Namespace) -> int:
     root = Path(args.root)
     lock = Path(args.lock) if args.lock else root / "composer.lock"
@@ -249,6 +273,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"wordpress-nix audit: {e}", file=sys.stderr)
         return 2
     introduced, existing = audit(root, lock_text, feed, base_text, args.base_rev)
+    if args.markdown:
+        Path(args.markdown).write_text(markdown(introduced, existing))
     if args.format == "json":
         json.dump(
             {
@@ -280,3 +306,4 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--feed", help=f"a Wordfence V3 feed file (default: download with {KEY_ENV})")
     p.add_argument("--format", choices=("text", "json", "github"), default="text")
+    p.add_argument("--markdown", metavar="FILE", help="also write the report here, as Markdown")

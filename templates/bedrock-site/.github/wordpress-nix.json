@@ -1,0 +1,8 @@
+{
+  "slug": "changeme",
+  "woocommerce": false,
+  "homeUrl": "https://example.org",
+  "dropPlugins": [],
+  "localUploadPrefixes": ["cwicly", "fonts", "wpcodebox", "fluentform"]
+}
+

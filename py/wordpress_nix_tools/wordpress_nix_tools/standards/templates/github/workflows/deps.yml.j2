@@ -1,0 +1,46 @@
+{% import "github/workflows/_uses.j2" as w with context %}
+{% set d = cfg.dependabot %}
+{% set app = cfg.ci["github-app"] %}
+# Dependency pull requests (wordpress-nix docs: production/site-ci.md): a Dependabot
+# Composer PR is relocked (nix/vendor-hash), its composer.lock checked ("the URL names the
+# same package and version"), and merged or left by the decision table; the sweep and
+# update-branches keep bot PRs moving.
+name: deps
+on:
+  pull_request:
+{% if d["update-branches"] %}
+  # Bring the bot pull requests that are behind up to date.
+  push:
+    branches: [{{ branches.integration | json_string }}]
+{% endif %}
+  schedule:
+    # The sweep: CI for bot PRs that never got a run.
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  deps:
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      checks: read
+    uses: {{ w.uses("site-deps.yml") }}
+    with:
+      integration-branch: {{ branches.integration | json_string }}
+      runs-on: {{ cfg.ci["runs-on"] | yaml_json }}
+      auto-merge: {{ "true" if d["auto-merge"] else "false" }}
+{% if d["auto-merge-policy"] != "decision-table" %}
+      auto-merge-policy: {{ d["auto-merge-policy"] }}
+{% endif %}
+      update-branches: {{ "true" if d["update-branches"] else "false" }}
+      merge-method: {{ cfg["repo-policy"]["merge-methods"][0] }}
+      nix-cache: {{ "${{ vars." ~ cfg.ci["nix-cache-variable"] ~ " }}" }}
+    secrets:
+      NIX_CACHE_READ_TOKEN: {% raw %}${{ secrets.WORDPRESS_NIX_CACHE_READ_TOKEN }}{% endraw %}
+
+{% if app %}
+      # Org Actions and Dependabot secrets both: a Dependabot run sees only the latter.
+      APP_ID: {{ "${{ secrets." ~ app["app-id"] ~ " }}" }}
+      APP_PRIVATE_KEY: {{ "${{ secrets." ~ app["private-key"] ~ " }}" }}
+{% endif %}

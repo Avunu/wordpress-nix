@@ -46,3 +46,18 @@ web/app/mu-plugins/platform-*.php
 # BEGIN wordpress-nix (managed): committed premium and custom code, one line each
 # !web/app/plugins/<slug>
 # END wordpress-nix
+
+# >>> wordpress-nix: site (managed) >>>
+# Never committed (site-ci's ci / flake refuses dumps, auth.json and .env)
+auth.json
+.env
+.env.*
+!.env.example
+*.sql
+*.sql.gz
+# Built by Composer and the site flake, never committed
+/vendor
+web/wp
+web/app/uploads/*
+!web/app/uploads/.gitkeep
+# <<< wordpress-nix: site (managed) <<<

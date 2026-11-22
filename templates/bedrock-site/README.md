@@ -12,12 +12,20 @@ and served read-only.
   change to `composer.lock`, run `nix run .#relock` and commit both.
 
 ```sh
+nix flake lock                        # once, after `nix flake init`
+nix run .#wordpress-nix -- sync --write   # the managed files: CI callers, Dependabot, ...
 composer update --no-install          # or: composer require wp-plugin/<slug>
 nix run .#relock                      # rewrites nix/vendor-hash
 nix build                             # the site: result/web is the document root
-nix flake check --no-pure-eval        # composer-validate, vendor-hash, build
+nix flake check --no-pure-eval        # composer-validate, vendor-hash, build, smoke (KVM)
 nix run .#verify-wp-checksums         # the build against wordpress.org (network)
 ```
+
+`wordpress-nix.toml` opts the site into wordpress-nix's standards (the
+`deployment` profile): `.github/` (Dependabot, the `ci`, `deps` and `audit`
+workflows), `.editorconfig`, `.pre-commit-config.yaml` and `committed.toml` are
+rendered by `wordpress-nix sync` and never edited by hand. Dependabot's Composer
+PRs are relocked, checked and merged by the `deps` workflow.
 
 ## Developing
 

@@ -1,0 +1,15 @@
+{# The locked wordpress-nix revision. A lock without one (a path: override, as
+   wordpress-nix's own self-tests lock it) keeps the file's pin: this workflow's, else
+   site-ci.yml's. #}
+{% macro uses(workflow) %}
+{% set at = wordpress_nix.owner ~ "/" ~ wordpress_nix.name ~ "/.github/workflows/" %}
+{% if wordpress_nix.rev %}
+{{ at ~ workflow }}@{{ wordpress_nix.rev }} # v{{ wordpress_nix.version }}
+{%- else %}
+{% set kept = pin(at ~ workflow, "", "v" ~ wordpress_nix.version) %}
+{% if "@ #" in kept %}
+{% set kept = pin(at ~ "site-ci.yml", "", "v" ~ wordpress_nix.version).replace("site-ci.yml", workflow) %}
+{% endif %}
+{{ kept }}
+{%- endif %}
+{% endmacro %}

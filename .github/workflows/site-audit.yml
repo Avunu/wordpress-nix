@@ -1,0 +1,352 @@
+name: site-audit
+
+# A site repository's scheduled audits (docs/production/site-ci.md; moonshot v3 §4.3,
+# §4.7, §4.14), reusable. The site's audit.yml calls it on two schedules, which it passes
+# back as daily-cron and weekly-cron; a dispatch runs every job.
+#
+#   vulnerabilities  (daily) `wordpress-nix audit` (Wordfence Intelligence) over
+#                    composer.lock and the committed plugins and themes; one issue,
+#                    "Vulnerable packages" (labelled security), opened or updated while
+#                    there are findings and closed when there are none. The fix is an
+#                    operator's `composer update wp-plugin/<x>` on a security/* branch.
+#   vendor-rebuild   (weekly) `nix build --rebuild .#vendor`: the vendor tree fetched
+#                    again from the registries must hash as nix/vendor-hash says. A
+#                    mismatch under an unchanged lock is a security event: an issue,
+#                    "Vendor hash drift" (security), never a relock. Any other
+#                    failure (an outage, an evaluation error) only fails the job.
+#   cluster-compat   (daily; not a required check) the site built with the wordpress-nix
+#                    and nixpkgs the cluster pins (§4.7): the revisions are read from the
+#                    cluster repository's flake.lock with the App's token on a hosted
+#                    runner, then the build runs on the caller's runner without it.
+#
+# Not here yet: the weekly premium-plugin staleness check (`wp plugin list
+# --update=available` in development mode), which needs a running site.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: >-
+          The runner of the nix jobs, as JSON: a label or a list of labels
+          (`["self-hosted", "nixos"]`).
+        type: string
+        default: '["self-hosted", "nixos"]'
+      daily-cron:
+        description: The caller's daily schedule (vulnerabilities, cluster-compat)
+        type: string
+        default: ""
+      weekly-cron:
+        description: The caller's weekly schedule (vendor-rebuild)
+        type: string
+        default: ""
+      nix-cache:
+        description: '"", "cachix:<name>" or "attic:<endpoint>/<cache>" (the WORDPRESS_NIX_CACHE variable)'
+        type: string
+        default: ""
+      cluster-repo:
+        description: >-
+          The cluster instance (a repository of the site's owner, by name) whose flake.lock
+          pins the wordpress-nix and nixpkgs production builds with
+        type: string
+        default: cluster-ovh-01
+    secrets:
+      NIX_CACHE_READ_TOKEN:
+        required: false
+      WORDFENCE_API_KEY:
+        required: false
+      APP_ID:
+        description: The GitHub App, which reads the (private) cluster repository's flake.lock
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
+
+permissions: {}
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  vulnerabilities:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == inputs.daily-cron
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write # the "Vulnerable packages" issue
+    steps:
+      - if: runner.environment != 'github-hosted'
+        name: Clear what an earlier job left in the runner's temp dir and workspace
+        working-directory: ${{ runner.temp }}
+        run: |
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name '_*' ! -type l -exec chmod -R u+w {} +
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name '_*' -exec rm -rf {} +
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 ! -type l -exec chmod -R u+w {} +
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        if: runner.environment == 'github-hosted'
+        with:
+          determinate: false
+
+      - id: audit
+        name: Wordfence against what the site installs
+        env:
+          WORDPRESS_NIX_WORDFENCE_KEY: ${{ secrets.WORDFENCE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WORDPRESS_NIX_WORDFENCE_KEY" ]; then
+            echo "::error::WORDFENCE_API_KEY is not set"
+            exit 1
+          fi
+          status=0
+          nix run .#wordpress-nix -- audit --markdown "$RUNNER_TEMP/audit.md" || status=$?
+          case "$status" in
+            0) echo "found=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "found=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+          cat "$RUNNER_TEMP/audit.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the "Vulnerable packages" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOUND: ${{ steps.audit.outputs.found }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Vulnerable packages"
+          number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label security \
+            --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)"
+          if [ "$FOUND" = true ]; then
+            gh label create security --repo "$GITHUB_REPOSITORY" --color b60205 \
+              --description "A vulnerable version, or a vendor hash that changed under an unchanged lock" --force
+            {
+              echo "The daily Wordfence audit ($RUN_URL) found what the site installs in the feed."
+              echo "Update each on a \`security/*\` branch: \`composer update wp-plugin/<slug>\`, \`nix run .#relock\`,"
+              echo "or the committed plugin's own update in the dev shell. Every gate still applies."
+              echo
+              cat "$RUNNER_TEMP/audit.md"
+            } > "$RUNNER_TEMP/body.md"
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label security --body-file "$RUNNER_TEMP/body.md"
+            fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "The audit of $RUN_URL found nothing."
+          fi
+
+  vendor-rebuild:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == inputs.weekly-cron
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write # the "Vendor hash drift" issue
+    steps:
+      - if: runner.environment != 'github-hosted'
+        name: Clear what an earlier job left in the runner's temp dir and workspace
+        working-directory: ${{ runner.temp }}
+        run: |
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name '_*' ! -type l -exec chmod -R u+w {} +
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name '_*' -exec rm -rf {} +
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 ! -type l -exec chmod -R u+w {} +
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        if: runner.environment == 'github-hosted'
+        with:
+          determinate: false
+
+      # No binary cache: the point is to fetch it again from the registries. The first build
+      # makes sure the path is there (built or substituted); --rebuild then fetches it again
+      # and compares. Drift is only what Nix itself says of the output: a fixed-output hash
+      # mismatch, or --rebuild's "output … differs". Any other failure (a registry's 5xx, DNS,
+      # a timeout, an evaluation error) fails the job and leaves the issue alone, so an outage
+      # never files a security event.
+      - id: rebuild
+        name: nix build --rebuild .#vendor
+        run: |
+          set -euo pipefail
+          status=0
+          {
+            nix build --no-link .#vendor && nix build --no-link --rebuild .#vendor
+          } > "$RUNNER_TEMP/rebuild.log" 2>&1 || status=$?
+          tail -n 40 "$RUNNER_TEMP/rebuild.log"
+          if [ "$status" = 0 ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          elif grep -qE "hash mismatch in fixed-output derivation|may not be deterministic: output .* differs" \
+            "$RUNNER_TEMP/rebuild.log"; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::the vendor tree did not build (status $status), with no hash mismatch: not drift, see the log"
+            exit "$status"
+          fi
+
+      - if: steps.rebuild.outputs.drift == 'true'
+        name: Open the "Vendor hash drift" issue (never a relock)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Vendor hash drift"
+          gh label create security --repo "$GITHUB_REPOSITORY" --color b60205 \
+            --description "A vulnerable version, or a vendor hash that changed under an unchanged lock" --force
+          {
+            echo "The weekly \`nix build --rebuild .#vendor\` ($RUN_URL) did not reproduce \`nix/vendor-hash\`"
+            echo "from the unchanged \`composer.lock\`. A registry served different bytes for a locked version:"
+            echo "treat it as a security event. Do not relock: find which package changed (the log below), and"
+            echo "compare it with the copy production runs."
+            echo
+            echo '```'
+            tail -n 60 "$RUNNER_TEMP/rebuild.log"
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label security \
+            --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label security --body-file "$RUNNER_TEMP/body.md"
+          fi
+          exit 1
+
+  # The App's token on a fresh hosted runner, reading one file: the revisions the cluster
+  # builds this site with (cluster → wordpress-nix → nixpkgs in its flake.lock).
+  cluster-pins:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == inputs.daily-cron
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      wordpress-nix: ${{ steps.pins.outputs.wordpress-nix }}
+      nixpkgs: ${{ steps.pins.outputs.nixpkgs }}
+    steps:
+      - id: app
+        name: Whether the caller passes the GitHub App
+        env:
+          ENABLED: ${{ secrets.APP_ID != '' && secrets.APP_PRIVATE_KEY != '' }}
+        run: echo "enabled=$ENABLED" >> "$GITHUB_OUTPUT"
+
+      - if: steps.app.outputs.enabled == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.cluster-repo }}
+          permission-contents: read
+
+      - id: pins
+        name: The cluster's wordpress-nix and nixpkgs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          CLUSTER: ${{ github.repository_owner }}/${{ inputs.cluster-repo }}
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw' "repos/$CLUSTER/contents/flake.lock" > lock.json
+          # A node's input: a node name, or a `follows` path from the root.
+          jq -r '
+            . as $lock
+            | ($lock.root // "root") as $root
+            | def node($ref):
+                if ($ref | type) == "array"
+                then reduce $ref[] as $step ($root; $lock.nodes[.].inputs[$step] as $next
+                  | if ($next | type) == "array" then error("a follows path that leads to another") else $next end)
+                else $ref end;
+              node($lock.nodes[$root].inputs.cluster) as $cluster
+            | node($lock.nodes[$cluster].inputs["wordpress-nix"]) as $wp
+            | node($lock.nodes[$wp].inputs.nixpkgs) as $np
+            | "wordpress-nix=github:\($lock.nodes[$wp].locked.owner)/\($lock.nodes[$wp].locked.repo)/\($lock.nodes[$wp].locked.rev)",
+              "nixpkgs=github:\($lock.nodes[$np].locked.owner)/\($lock.nodes[$np].locked.repo)/\($lock.nodes[$np].locked.rev)"
+          ' lock.json | tee -a "$GITHUB_OUTPUT"
+
+  cluster-compat:
+    needs: cluster-pins
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - if: runner.environment != 'github-hosted'
+        name: Clear what an earlier job left in the runner's temp dir and workspace
+        working-directory: ${{ runner.temp }}
+        run: |
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name '_*' ! -type l -exec chmod -R u+w {} +
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name '_*' -exec rm -rf {} +
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 ! -type l -exec chmod -R u+w {} +
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        if: runner.environment == 'github-hosted'
+        with:
+          determinate: false
+
+      - id: cache
+        name: Binary cache
+        env:
+          CACHE: ${{ inputs.nix-cache }}
+        run: |
+          set -euo pipefail
+          case "$CACHE" in
+            "") echo "kind=none" >> "$GITHUB_OUTPUT" ;;
+            cachix:*) echo "kind=cachix" >> "$GITHUB_OUTPUT"; echo "name=${CACHE#cachix:}" >> "$GITHUB_OUTPUT" ;;
+            attic:*/*)
+              rest="${CACHE#attic:}"
+              echo "kind=attic" >> "$GITHUB_OUTPUT"
+              echo "endpoint=${rest%/*}" >> "$GITHUB_OUTPUT"
+              echo "name=${rest##*/}" >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::nix-cache must be empty, cachix:<name> or attic:<endpoint>/<cache>, not $CACHE"; exit 1 ;;
+          esac
+          if [ -n "$CACHE" ] && [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
+            mkdir -p "$RUNNER_TEMP/config"
+            echo "XDG_CONFIG_HOME=$RUNNER_TEMP/config" >> "$GITHUB_ENV"
+          fi
+
+      - if: steps.cache.outputs.kind == 'cachix'
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ steps.cache.outputs.name }}
+          authToken: ${{ secrets.NIX_CACHE_READ_TOKEN }}
+          skipPush: true
+
+      - if: steps.cache.outputs.kind == 'attic'
+        name: attic
+        env:
+          TOKEN: ${{ secrets.NIX_CACHE_READ_TOKEN }}
+          ENDPOINT: ${{ steps.cache.outputs.endpoint }}
+          NAME: ${{ steps.cache.outputs.name }}
+        run: |
+          set -euo pipefail
+          attic="$(nix build --no-link --print-out-paths "github:NixOS/nixpkgs/nixos-unstable#attic-client^out")/bin"
+          PATH="$attic:$PATH"
+          attic login ci "$ENDPOINT" ${TOKEN:+"$TOKEN"}
+          attic use "ci:$NAME"
+
+      - name: The site on the cluster's wordpress-nix and nixpkgs
+        env:
+          WORDPRESS_NIX: ${{ needs.cluster-pins.outputs.wordpress-nix }}
+          NIXPKGS: ${{ needs.cluster-pins.outputs.nixpkgs }}
+        run: |
+          set -euo pipefail
+          nix build -L --no-link .#default \
+            --override-input wordpress-nix "$WORDPRESS_NIX" \
+            --override-input wordpress-nix/nixpkgs "$NIXPKGS"

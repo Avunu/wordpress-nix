@@ -91,7 +91,10 @@ let
       auditMysqlDump
       verifyWpChecksums
     ];
+    # audit and the Cloudflare calls use urllib over HTTPS; a Nix-built Python has
+    # no CA bundle of its own where the host offers none.
     text = ''
+      export SSL_CERT_FILE="''${SSL_CERT_FILE:-${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt}"
       exec ${env}/bin/python3 -I -m wordpress_nix_tools "$@"
     '';
     meta = {

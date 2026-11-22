@@ -1,0 +1,54 @@
+# wordpress-nix's built-in profile `deployment@1.0`: the `wordpress-site` standards
+# profile (moonshot v3 §10.1). A site repository is a deployment project: deployed by the
+# cluster from main, never released, so `releases` stays off (standards-core refuses a
+# deployment profile that turns it on). Frozen once released: a later minor that changes it
+# adds deployment@1.<minor>.toml. Every value is the schema's default but the module switches
+# and the repository policy's.
+
+schema = 1
+name = "deployment"
+description = "A WordPress site repository (wordpress-site): Composer Dependabot with the relock pipeline, the ci / flake, ci / smoke and ci / audit gates, conventional commits and the main ruleset."
+
+[dev-shell]
+enable = true
+
+[editorconfig]
+enable = true
+
+[lint]
+enable = true
+
+[commits]
+enable = true
+allowed-types = ["build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test"]
+subject-length = 100
+allow-stacked = true
+pr-allowed-bases = []
+
+[releases]
+enable = false
+
+[dependabot]
+enable = true
+timezone = "America/New_York"
+open-pull-requests-limit = 10
+auto-merge = true
+auto-merge-policy = "decision-table"
+update-branches = true
+
+[ci]
+enable = true
+runs-on = ["self-hosted", "nixos"]
+smoke-runs-on = ["self-hosted", "linux", "x64", "kvm"]
+nix-cache-variable = "WORDPRESS_NIX_CACHE"
+github-app = { app-id = "APP_ID", private-key = "APP_PRIVATE_KEY" }
+schedules = {}
+
+[site]
+enable = true
+local-upload-prefixes = ["cwicly", "fonts", "wpcodebox", "fluentform"]
+
+[repo-policy]
+enable = true
+required-approvals = 0
+merge-methods = ["squash"]

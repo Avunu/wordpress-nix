@@ -1,0 +1,48 @@
+{% set d = cfg.dependabot %}
+# Composer moves daily, in groups (moonshot v3 §5.4); nix/vendor-hash follows on every
+# Composer PR through deps.yml's relock. wordpress-nix moves only through its rollout,
+# so there is no nix ecosystem, and its reusable workflows are ignored here.
+version: 2
+updates:
+  - package-ecosystem: composer
+    directory: /
+    schedule:
+      interval: daily
+      # Hashed from the slug, so the fleet's relocks spread out.
+      time: {{ dependabot_time | json_string }}
+      timezone: {{ d.timezone | json_string }}
+    versioning-strategy: increase
+    open-pull-requests-limit: {{ d["open-pull-requests-limit"] }}
+    cooldown:
+      default-days: 7
+      semver-patch-days: 1
+      # Core patches are security releases: no cooldown.
+      exclude:
+        - roots/wordpress
+        - roots/wordpress-no-content
+    commit-message:
+      prefix: fix(deps)
+    labels: [dependencies]
+    groups:
+      wordpress-core:
+        patterns: ["roots/wordpress*"]
+      wp-plugins:
+        patterns: ["wp-plugin/*", "wp-theme/*"]
+        update-types: [minor, patch]
+      avunu:
+        patterns: ["avunu/*"]
+      php-libs:
+        patterns: ["*"]
+        exclude-patterns: ["roots/wordpress*", "wp-plugin/*", "wp-theme/*", "avunu/*"]
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "{{ wordpress_nix.owner }}/{{ wordpress_nix.name }}*"
+    commit-message:
+      prefix: chore(deps)
+    labels: [dependencies]
+  # wordpress-nix:local-begin updates
+  # wordpress-nix:local-end updates
