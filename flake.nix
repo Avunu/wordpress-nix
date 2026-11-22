@@ -139,7 +139,39 @@
             # A built Bedrock tree against wordpress.org's published checksums
             # (core, wp-plugin/*) and locked zips (wp-theme/*). Needs the network.
             verify-wp-checksums = import ./lib/verify-wp-checksums.nix { inherit pkgs; };
+          }
+          // (
+            let
+              tools = import ./lib/tools.nix {
+                inherit pkgs;
+                base = python-devops-nix.lib;
+                coreRev = python-devops-nix.rev or null;
+                auditMysqlDump = self.packages.${system}.audit-mysql-dump;
+                verifyWpChecksums = self.packages.${system}.verify-wp-checksums;
+              };
+            in
+            {
+              # `nix run github:Avunu/wordpress`: the scaffolder (docs/reference/scaffolder.md).
+              default = tools.wordpressInit;
+              wordpress-init = tools.wordpressInit;
+              # The conversion commands and the site CI steps (docs/reference/wordpress-nix-cli.md).
+              wordpress-nix = tools.wordpressNix;
+              wordpress-nix-tools = tools.package;
+            }
+          );
+
+        apps = {
+          default = {
+            type = "app";
+            program = pkgs.lib.getExe self.packages.${system}.wordpress-init;
+            meta.description = "Scaffold a wordpress-nix site, or convert a pulled classic WordPress install";
           };
+          wordpress-nix = {
+            type = "app";
+            program = pkgs.lib.getExe self.packages.${system}.wordpress-nix;
+            meta.description = "wordpress-nix's conversion commands and site CI steps";
+          };
+        };
 
         # Toolchain for platform development: `nix develop`.
         devShells.default = pkgs.mkShell {
@@ -201,6 +233,16 @@
             audit-mysql-dump = import ./tools/test/audit-mysql-dump-test.nix {
               inherit pkgs;
               auditor = self.packages.${system}.audit-mysql-dump;
+            };
+            # wordpress-nix-tools' pytest suite (its check phase).
+            tools = self.packages.${system}.wordpress-nix-tools;
+            # `wordpress-init --migrate` over a synthetic classic install, offline:
+            # dispositions, the backup, idempotency, the guard rails' exit codes,
+            # and the lock step's ordering against stand-in composer and nix.
+            migrate-classic = import ./tests/migrate-classic.nix {
+              inherit pkgs;
+              checks = mk;
+              wordpress-init = self.packages.${system}.wordpress-init;
             };
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

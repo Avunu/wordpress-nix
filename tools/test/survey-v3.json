@@ -1,0 +1,2 @@
+{"schema": 1, "administrators": [{"id": 1, "login": "admin"}],
+ "dbCode": {"triggers": [], "routines": [], "events": [], "views": []}}

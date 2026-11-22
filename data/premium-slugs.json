@@ -1,0 +1,43 @@
+{
+  "premium": [
+    "cwicly",
+    "happyfiles-pro",
+    "wpcodebox2",
+    "wpcodebox_functionality_plugin",
+    "fluentformpro",
+    "fluentcampaign-pro",
+    "relevanssi-premium",
+    "seo-by-rank-math-pro",
+    "wp-fusion",
+    "wp-sheet-editor-premium",
+    "media-library-premium",
+    "automatewoo",
+    "woocommerce-gift-cards",
+    "woocommerce-shipment-tracking",
+    "woocommerce-wishlists",
+    "woocommerce-advanced-shipping",
+    "woocommerce-tax-exempt-plugin",
+    "woocommerce-wholesale-prices-premium",
+    "advanced-dynamic-pricing-pro",
+    "conditional-payments-pro",
+    "wc-shipstation-shipping-pro",
+    "ultimate-tax-exemption",
+    "give-recurring",
+    "give-stripe",
+    "give-pdf-receipts",
+    "give-fee-recovery",
+    "give-mailchimp",
+    "give-manual-donations",
+    "give-annual-receipts",
+    "give-email-reports",
+    "wp-webhooks-pro",
+    "stripe-direct-debit-woocommerce",
+    "advanced-custom-fields-pro",
+    "gravityforms"
+  ],
+  "avunu": {
+    "wp-cloud-files": "avunu/wp-cloud-files",
+    "cloudflare-email": "avunu/cloudflare-email",
+    "gutenberg-downgrade": "avunu/gutenberg-downgrade"
+  }
+}

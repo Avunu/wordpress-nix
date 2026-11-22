@@ -1,0 +1,18 @@
+{
+  "plugins": {
+    "wpcodebox2": {
+      "why": "runs PHP snippets stored in the database",
+      "default": {
+        "developmentOnly": true,
+        "companion": "wpcodebox_functionality_plugin",
+        "note": "snippets are committed as wpcodebox_functionality_plugin; wpcodebox2 runs in development only (D12)"
+      }
+    },
+    "wpcodebox": {"why": "runs PHP snippets stored in the database"},
+    "code-snippets": {"why": "runs PHP snippets stored in the database"},
+    "insert-headers-and-footers": {"why": "prints header and footer code stored in the database"},
+    "header-footer-code-manager": {"why": "prints header and footer code stored in the database"},
+    "woody-ad-snippets": {"why": "runs PHP snippets stored in the database"},
+    "php-everywhere": {"why": "runs PHP stored in post content"}
+  }
+}

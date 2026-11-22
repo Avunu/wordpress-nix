@@ -1,0 +1,11 @@
+{
+  "plugins": {
+    "wp-fusion": "stores CRM API credentials encrypted with the site's salts",
+    "fluent-smtp": "stores SMTP credentials encrypted with the site's salts",
+    "fluentcampaign-pro": "stores integration credentials encrypted with the site's salts",
+    "seo-by-rank-math-pro": "licence data tied to the site's salts",
+    "two-factor": "TOTP secrets are encrypted with the site's salts (re-enrol after cutover)",
+    "wp-mail-smtp": "stores SMTP credentials encrypted with the site's salts",
+    "give": "encrypts gateway settings with the site's salts"
+  }
+}

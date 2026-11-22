@@ -16,7 +16,12 @@ cron timer.
 - **The dev shell.** The same flake module's devenv shell: the platform's PHP
   and FrankenPHP over the checkout, MariaDB, Mailpit, `wp restore`.
 - **A new site.** `nix flake init -t github:Avunu/wordpress` lays down
-  `templates/bedrock-site`; then `composer update && nix run .#relock`.
+  `templates/bedrock-site`; then `composer update && nix run .#relock`. Or
+  `nix run github:Avunu/wordpress` ([the scaffolder](reference/scaffolder.md)).
+- **A legacy site.** `wordpress-nix legacy pull`, then
+  `nix run github:Avunu/wordpress -- --migrate` on the pulled copy, then the
+  data and edge commands: see [Convert a legacy WordPress site](scaffolding/migrate.md)
+  and [the CLI](reference/wordpress-nix-cli.md).
 
 ## Features
 
@@ -53,6 +58,9 @@ modules/site.nix                # wordpress-nix.site: a site flake's packages, a
 modules/devenv.nix              # a site flake's dev shell
 mu-plugins/                     # injected into every build
 templates/bedrock-site/         # nix flake init -t github:Avunu/wordpress
+lib/tools.nix                   # wordpress-init and wordpress-nix (py/wordpress_nix_tools)
+py/wordpress_nix_tools/         # the scaffolder, the conversion commands, the standards product
+data/                           # presets, drop list, runtime writers, premium slugs, ...
 tests/                          # the build, the template, the module (VM), logging
 tools/                          # audit-mysql-dump, restore-core-keys, verify-wp-checksums
 ```

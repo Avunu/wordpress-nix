@@ -121,6 +121,13 @@ let
           "$out/vendor/composer/InstalledVersions.php" "$out/vendor/composer/ClassLoader.php" \
           "$out/vendor/composer/LICENSE" "$out/vendor/composer/platform_check.php" \
           "$out"/vendor/composer/autoload_*.php
+
+        # Composer 2.11 copies each package's published-time from composer.lock
+        # into installed.json, and earlier ones do not; without it the file is
+        # the same for either, written as Composer writes it (four spaces).
+        installed="$out/vendor/composer/installed.json"
+        jq --indent 4 'del(.packages[]?["published-time"])' "$installed" > "$installed.tmp"
+        mv "$installed.tmp" "$installed"
       '';
     }
   );
