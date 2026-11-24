@@ -1,3 +1,12 @@
+---
+title: Site CI and the dependency pipeline
+description: "The three reusable workflows every site repository calls, what each runs, and how dependency updates and audits reach a site."
+nav_title: Site CI
+order: 3
+tags: [ci, dependabot, production]
+updated: 2026-11-24
+---
+
 # Site CI and the dependency pipeline
 
 Every site repository (`Avunu/site-<slug>`) runs the same three workflows, thin

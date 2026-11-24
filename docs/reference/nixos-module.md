@@ -1,3 +1,12 @@
+---
+title: The NixOS module (v3)
+description: "The nixosModules.default module: one read-only Bedrock site with its MariaDB, migrate-on-deploy and cron."
+nav_title: NixOS module
+order: 2
+tags: [reference, nixos, module]
+updated: 2026-11-24
+---
+
 # The NixOS module (v3)
 
 `nixosModules.default` (`modules/nixos.nix`) runs one Bedrock site, built by

@@ -1,9 +1,20 @@
+---
+title: Getting started
+description: "Scaffold a Bedrock site repository with wordpress-nix, with its CI, its Dependabot pipeline and a build the cluster can deploy."
+nav_title: Getting started
+order: 1
+tags: [quick-start, bedrock]
+updated: 2026-11-24
+---
+
 # Getting started
 
 This page takes you from an empty directory to a site repository with its CI,
 its Dependabot pipeline and a build the cluster can deploy. A site converted
 from a running WordPress follows the scaffolder's migrate mode instead
 (`wordpress-init --migrate`), and ends in the same place.
+
+On a new machine, set up Nix, direnv and VS Code first with [the new-host guide](https://avunu.net/kb/nixos/getting-started-nix-development/).
 
 You need Nix with flakes, `git`, and a GitHub account in the Avunu organisation
 for the last steps.

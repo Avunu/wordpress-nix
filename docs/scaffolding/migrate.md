@@ -1,6 +1,6 @@
 ---
 title: Convert a legacy WordPress site
-description: Pull a classic WordPress install off its legacy host, read-only, and convert it into a stock Bedrock wordpress-nix site, then provision, import, verify and cut over.
+description: "Pull a classic WordPress install off its legacy host, read-only, and convert it into a stock Bedrock wordpress-nix site, then provision, import, verify and cut over."
 order: 2
 tags: [scaffolding, migrate, bedrock, conversion, cutover]
 updated: 2026-11-21

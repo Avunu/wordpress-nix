@@ -1,3 +1,12 @@
+---
+title: The Bedrock build (v3)
+description: "How a site repository becomes the read-only tree production serves: mkBedrockSite, wordpress-nix.site and the relock command."
+nav_title: Bedrock build
+order: 3
+tags: [reference, bedrock, build]
+updated: 2026-11-24
+---
+
 # The Bedrock build (v3)
 
 How a v3 site repository becomes the read-only tree production serves:

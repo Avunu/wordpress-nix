@@ -1,6 +1,6 @@
 ---
 title: Scaffolder
-description: The flags, modes and exit codes of wordpress-init, the program behind nix run github:Avunu/wordpress that creates, converts and reconciles Bedrock sites.
+description: "The flags, modes and exit codes of wordpress-init, the program behind nix run github:Avunu/wordpress that creates, converts and reconciles Bedrock sites."
 order: 4
 tags: [reference, wordpress-init, cli, scaffolding]
 updated: 2026-11-21

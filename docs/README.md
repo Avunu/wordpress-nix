@@ -1,3 +1,12 @@
+---
+title: wordpress-nix
+description: "Read-only WordPress sites built with Nix from a stock Bedrock repository, served by FrankenPHP on NixOS with migrate-on-deploy."
+nav_title: Overview
+order: 0
+tags: [wordpress, nix, overview]
+updated: 2026-11-24
+---
+
 # wordpress-nix
 
 WordPress sites built with Nix and served read-only: each site is a stock

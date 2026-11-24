@@ -1,3 +1,12 @@
+---
+title: Releases and the cluster
+description: "How a site is deployed by the cluster rather than released, and how site flakes follow the platform's wordpress-nix."
+nav_title: Releases
+order: 4
+tags: [deployment, production]
+updated: 2026-11-24
+---
+
 # Releases and the cluster
 
 A site is deployed by the cluster (`nixos-cluster-orchestration`'s `wordpress`

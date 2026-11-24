@@ -1,6 +1,6 @@
 ---
 title: The wordpress-nix CLI
-description: The conversion commands (legacy, db, media, edge, repo adopt, site, verify, cutover, audit) and the standards-core commands of wordpress-nix, with their flags, records and exit codes.
+description: "The conversion commands (legacy, db, media, edge, repo adopt, site, verify, cutover, audit) and the standards-core commands of wordpress-nix, with their flags, records and exit codes."
 order: 5
 tags: [reference, cli, conversion, cloudflare, ci]
 updated: 2026-11-21
