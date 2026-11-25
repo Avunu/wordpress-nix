@@ -192,3 +192,91 @@ def test_plan_runs_the_adopt_check(tmp_path, repo, monkeypatch, capsys):
     monkeypatch.setattr(repo_adopt.Adopter, "decide", offline)
     note = plan.adopt_check(st)
     assert note.startswith("unavailable (cloning") and "repo adopt fixture --check" in note
+
+
+def test_registry_reads_both_p2_shapes():
+    from wordpress_nix_tools.wordpress_init import wporg
+
+    bodies = {
+        # WP Packages keys a package's versions by version string.
+        "https://repo.wp-packages.org/p2/wp-plugin/keyed.json": {
+            "packages": {"wp-plugin/keyed": {"4.6": {"version": "4.6"}, "4.7": {"name": "wp-plugin/keyed"}}}
+        },
+        # Packagist's p2: a list of version objects.
+        "https://repo.wp-packages.org/p2/wp-plugin/listed.json": {
+            "packages": {"wp-plugin/listed": [{"version": "v1.2"}, {"version": "1.3"}]}
+        },
+    }
+    cat = wporg.NetworkCatalog(fetch=lambda url: json.dumps(bodies[url]).encode())
+    assert cat.registry("plugin", "keyed") == {"4.6", "4.7"}
+    assert cat.registry("plugin", "listed") == {"1.2", "1.3"}
+
+
+class _Catalog:
+    def __init__(self, author, files):
+        self._author, self._files = author, files
+
+    def info(self, kind, slug):
+        from wordpress_nix_tools.wordpress_init.wporg import Info
+
+        return Info(name=slug, author=self._author, versions=["1.0"])
+
+    def registry(self, kind, slug):
+        return {"1.0"}
+
+    def files(self, kind, slug, version):
+        return self._files
+
+    def avunu(self, slug):
+        return None
+
+
+def _plugin(tmp_path, body, name="members", version="1.0", author="MemberPress"):
+    d = tmp_path / "wp-content" / "plugins" / name
+    d.mkdir(parents=True)
+    (d / f"{name}.php").write_text(body)
+    (d / "readme.txt").write_text("readme")
+    header = {"Author": author} if author is not None else {}
+    return Item(kind="plugin", name=name, version=version, header=header, active=True)
+
+
+def test_a_sold_plugin_with_wordpress_orgs_files_is_not_a_collision(tmp_path, repo):
+    from wordpress_nix_tools.wordpress_init import wporg
+
+    item = _plugin(tmp_path, "<?php // members")
+    d = tmp_path / item.source
+    published = {p.name: wporg.sha256(p) for p in d.iterdir()}
+    classify.classify_item(run_for(tmp_path, repo), item, _Catalog("Blair Williams", published))
+    assert not item.has("collision")
+    assert (item.disp, item.package) == ("composer", "wp-plugin/members")
+
+
+def test_another_plugin_under_the_slug_is_a_collision(tmp_path, repo):
+    item = _plugin(tmp_path, "<?php // someone else's")
+    classify.classify_item(run_for(tmp_path, repo), item, _Catalog("Blair Williams", {"members.php": "0" * 64}))
+    assert item.has("collision")
+    assert item.disp == "commit"
+
+
+def test_a_file_of_an_edited_tag_matches_any_of_its_hashes(tmp_path, repo):
+    from wordpress_nix_tools.wordpress_init import wporg
+
+    item = _plugin(tmp_path, "<?php // the release's header", author="Blair Williams")
+    mine = wporg.sha256(tmp_path / item.source / "members.php")
+    files = {"members.php": ["0" * 64, mine], "readme.txt": ["1" * 64, wporg.sha256(tmp_path / item.source / "readme.txt")]}
+    classify.classify_item(run_for(tmp_path, repo), item, _Catalog("Blair Williams", files))
+    assert not item.has("modified")
+    assert item.disp == "composer"
+
+
+def test_a_code_change_is_still_a_modification(tmp_path, repo):
+    item = _plugin(tmp_path, "<?php evil();", author="Blair Williams")
+    classify.classify_item(run_for(tmp_path, repo), item, _Catalog("Blair Williams", {"members.php": ["0" * 64, "1" * 64]}))
+    assert item.has("modified")
+
+
+def test_an_authorless_fork_at_an_unreleased_version_collides_and_drops(tmp_path, repo):
+    item = _plugin(tmp_path, "<?php // the fork", name="jwt-auth", version="4.2.2", author=None)
+    classify.classify_item(run_for(tmp_path, repo), item, _Catalog("Bagus", {"jwt-auth.php": "0" * 64}))
+    assert item.has("collision")
+    assert item.disp == "drop"
