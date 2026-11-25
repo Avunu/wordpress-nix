@@ -157,6 +157,32 @@ def _avunu_package(item: Item, catalog: wporg.Catalog) -> tuple[str, str] | None
     return package, constraint
 
 
+# A copy whose PHP is wordpress.org's published code for its version is that
+# plugin, whatever its Author header says (a sold plugin keeps its slug and changes
+# its author: Members is MemberPress's, FluentCRM's header names a team).
+PUBLISHED_COPY_SHARE = 0.9
+
+
+def _is_published_copy(item: Item, catalog: wporg.Catalog, st: Run) -> bool:
+    if not item.is_dir or not item.version:
+        return False
+    published = catalog.files(item.kind, item.slug, item.version)
+    if not published:
+        return False
+    return wporg.published_share(st.root / item.source, published) >= PUBLISHED_COPY_SHARE
+
+
+def _collides(item: Item, info: wporg.Info, catalog: wporg.Catalog, st: Run) -> bool:
+    """Another plugin under a wordpress.org slug: its author differs, or it names
+    none and is a version wordpress.org never released (a fork), and its code is not
+    the published code."""
+    author = item.header.get("Author", "")
+    unreleased = not author.strip() and bool(item.version) and item.version not in info.versions
+    if author_matches(author, info.author) and not unreleased:
+        return False
+    return not _is_published_copy(item, catalog, st)
+
+
 def classify_item(st: Run, item: Item, catalog: wporg.Catalog) -> None:
     a = st.args
     accepted = a.accepted()
@@ -218,7 +244,7 @@ def classify_item(st: Run, item: Item, catalog: wporg.Catalog) -> None:
         item.flag("delisted", "wordpress.org has closed this slug; the code is committed")
         item.disp, item.reason = "commit", "closed on wordpress.org"
         return
-    if not author_matches(item.header.get("Author", ""), info.author):
+    if _collides(item, info, catalog, st):
         reason = data.drop_reason(slug, collision=True)
         item.flag(
             "collision",

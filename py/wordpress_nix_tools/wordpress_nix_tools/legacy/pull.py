@@ -81,7 +81,9 @@ opts=$(php -r '
 db=$(printf '%s\n' "$opts" | sed -n 's/^#db=//p')
 shift
 exec 3<<<"$opts"
-exec mysqldump --defaults-extra-file=/dev/fd/3 "$@" "$db"
+# --defaults-file, not -extra-file: the login user's ~/.my.cnf is read after an
+# extra file, and its user= (root on xCloud hosts) would replace the site's.
+exec mysqldump --defaults-file=/dev/fd/3 "$@" "$db"
 """
 
 

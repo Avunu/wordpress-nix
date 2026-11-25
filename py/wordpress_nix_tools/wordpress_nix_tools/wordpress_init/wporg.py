@@ -55,8 +55,9 @@ class Catalog:
         """The versions WP Packages has for wp-<kind>/<slug>, or None when unknown."""
         raise NotImplementedError
 
-    def files(self, kind: str, slug: str, version: str) -> dict[str, str] | None:
-        """{relative path: sha256} of what wordpress.org published, or None."""
+    def files(self, kind: str, slug: str, version: str) -> dict[str, str | list[str]] | None:
+        """{relative path: sha256, or the list of them} of what wordpress.org
+        published, or None."""
         raise NotImplementedError
 
     def avunu(self, slug: str) -> str | None:
@@ -155,6 +156,11 @@ class NetworkCatalog(Catalog):
         if not isinstance(data, dict) or "__status" in data:
             return set() if isinstance(data, dict) and data.get("__status") == 404 else None
         versions = (data.get("packages") or {}).get(f"wp-{kind}/{slug}") or []
+        # Packagist's p2 is a list of version objects; WP Packages keys them by version.
+        if isinstance(versions, dict):
+            versions = [
+                v if isinstance(v, dict) and v.get("version") else {"version": k} for k, v in versions.items()
+            ]
         return {str(v.get("version", "")).lstrip("v") for v in versions if isinstance(v, dict)}
 
     def files(self, kind, slug, version):
@@ -164,10 +170,11 @@ class NetworkCatalog(Catalog):
             )
             if not isinstance(data, dict) or "__status" in data:
                 return None
+            # A file of a tag edited after its release lists every hash it has had.
             return {
-                rel: e.get("sha256")
+                rel: e["sha256"]
                 for rel, e in (data.get("files") or {}).items()
-                if isinstance(e, dict) and isinstance(e.get("sha256"), str)
+                if isinstance(e, dict) and isinstance(e.get("sha256"), (str, list))
             }
         blob = self._get(f"{DOWNLOADS}/theme/{slug}.{version}.zip", raw=True)
         if not isinstance(blob, bytes):
@@ -204,7 +211,27 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def modified_files(directory: Path, published: dict[str, str]) -> list[str]:
+def _published(want: str | list[str], path: Path) -> bool:
+    """The file is one of the published versions of it (a hash, or a list of them)."""
+    return sha256(path) in ([want] if isinstance(want, str) else want)
+
+
+def published_share(directory: Path, published: dict) -> float:
+    """The share of an installed copy's PHP files that are wordpress.org's published
+    files of the same path: near 1 for the wordpress.org plugin, near 0 for another
+    plugin that took its slug."""
+    total = matched = 0
+    for p in directory.rglob("*.php"):
+        if not p.is_file() or p.is_symlink():
+            continue
+        total += 1
+        want = published.get(p.relative_to(directory).as_posix())
+        if want is not None and _published(want, p):
+            matched += 1
+    return matched / total if total else 0.0
+
+
+def modified_files(directory: Path, published: dict) -> list[str]:
     """The files of an installed copy that differ from, or are absent from, the
     published set: any PHP file, and any other file that differs. A published file
     the copy lacks is not a modification."""
@@ -218,6 +245,6 @@ def modified_files(directory: Path, published: dict[str, str]) -> list[str]:
             if rel.endswith(".php"):
                 out.append(rel)
             continue
-        if sha256(p) != want:
+        if not _published(want, p):
             out.append(rel)
     return out
