@@ -47,11 +47,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1794919186,
-        "narHash": "sha256-28wJt3wsO/UqPMKI3plQtQF4TkBFTbRgxF2Vkj22a6M=",
+        "lastModified": 1795506422,
+        "narHash": "sha256-JiMk4WHj8ClBfM17iO5fYmnVvYNheJi4S+qNX+1s2Is=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "8efcb88c3fc5d110b0f1c499e01156cab23011d1",
+        "rev": "ea27e8d2bb7eca726558557e7590cc958c421d9b",
         "type": "github"
       },
       "original": {
@@ -294,11 +294,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1794890597,
-        "narHash": "sha256-lME2lHoDHAaSHP3/okgiVoJ0icVEvsQH8LeU3We7tcc=",
+        "lastModified": 1795234589,
+        "narHash": "sha256-f/VVvxf5RsQgWVhUtefoca5ktVg0DA2bnkMOcmSnozo=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "04906337b6d53e8bb0eaf0470ae9f070a4d4eb55",
+        "rev": "2786a2a72088ecf32aea5b3ec52099e6a7cff78f",
         "type": "github"
       },
       "original": {
@@ -318,11 +318,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1795312040,
-        "narHash": "sha256-zj68w+JnN5uX6f53DrnS2ZT95TQf4cdYGRiNqmwnsOE=",
+        "lastModified": 1795484240,
+        "narHash": "sha256-sb9f+wPv6tcwDBDQ397J5ss1Uph2nLcsKStTsRX18/k=",
         "owner": "Avunu",
         "repo": "python-devops-nix",
-        "rev": "7391ef964c14e16e6dc29d77bb905274bb4e5774",
+        "rev": "47df1f5d4536ac8c02dadaebe1880977384a3cee",
         "type": "github"
       },
       "original": {
